@@ -1,0 +1,59 @@
+# Configuration for Hessen 2024 bicycle traffic estimation
+# Extends base.yaml with region/year-specific settings
+
+# Region configuration
+region:
+  code: "06"  # Federal state code for Hessen
+  name: "Hessen"
+  bbox:
+    - 7.77   # min longitude
+    - 49.39  # min latitude
+    - 10.24  # max longitude
+    - 51.66  # max latitude
+
+# Temporal configuration
+temporal:
+  year: 2024
+  # STADTRADELN campaign period (varies by municipality, using overall bounds)
+  campaign_start: "2024-05-01"
+  campaign_end: "2024-09-30"
+  # Counter measurement period
+  counter_period_start: "2024-05-01"
+  counter_period_end: "2024-09-30"
+  # School holidays (for feature engineering)
+  holiday_start: "2024-07-15"
+  holiday_end: "2024-08-23"
+
+# Data paths (relative to data_root)
+data_paths:
+  data_root: "./data"
+
+  # Counter data
+  counter_locations: "counter-locations/DZS_ecovisio_2024_complete.csv"
+  counter_measurements: "counts/DZS_counts_ecovisio_2024.csv"
+
+  # Traffic volumes from STADTRADELN GPS traces
+  traffic_volumes: "trafficvolumes/SR24_Hessen_VM_assessed.fgb"
+
+  # Structural data
+  municipalities: "structural-data/DE_VG250.gpkg"
+  regiostar: "structural-data/regiostar_2022.csv"
+  city_centroids: "structural-data/places_centroids_hessen.gpkg"
+
+  # STADTRADELN participation data
+  kommunen_stats: "kommunen-stats/kommunen_stats_ds2024.shp"
+  campaign_stats: "campaign/SR_TeilnehmendeKommunen2018-2024_v2.csv"
+
+# MLflow configuration
+mlflow:
+  experiment_name: "hessen-dtv-2024"
+
+# Training configuration overrides
+training:
+  min_dtv: 25
+  # max_dtv: 500  # Optional upper bound
+
+# Output paths
+output:
+  plots_dir: "./plots/hessen_2024"
+  predictions_dir: "./predictions/hessen_2024"

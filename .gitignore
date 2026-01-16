@@ -1,0 +1,90 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# uv
+.uv/
+uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.coverage
+htmlcov/
+.tox/
+.nox/
+.pytest_cache/
+.hypothesis/
+
+# Type checking
+.pyright/
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data (large files)
+*.fgb
+*.gpkg
+*.parquet
+*.duckdb
+*.RData
+*.RDataTmp
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Cache
+cache/
+*.pkl
+*.pickle
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+*.local.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# AI agents
+.claude/
+
+# Project-specific
+data/
+plots/
+predictions/

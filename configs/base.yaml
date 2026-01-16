@@ -1,0 +1,141 @@
+# Base configuration for hochrechnung pipeline
+# This file contains default values that can be overridden by region/year-specific configs
+
+project:
+  name: "Bicycle Traffic Estimation"
+  version: "0.1.0"
+  description: "ML models for predicting daily bicycle traffic volumes at OSM edges"
+
+# MLflow configuration
+mlflow:
+  tracking_uri: "${MLFLOW_TRACKING_URI:http://127.0.0.1:5000}"
+  artifact_location: "./mlartifacts"
+  experiment_name: "default"
+
+# Training parameters
+training:
+  test_size: 0.2
+  cv_folds: 5
+  random_state: 1337
+  min_dtv: 25
+  max_dtv: null  # No upper limit by default
+
+  # Loss metrics to track
+  metrics:
+    - r2
+    - rmse
+    - mae
+    - mape
+
+# Preprocessing configuration
+preprocessing:
+  # Infrastructure category mapping (OSM -> simplified)
+  infrastructure_mapping:
+    "^bicycle_lane_.*$": "bicycle_lane"
+    "^bus_lane_.*$": "bicycle_lane"
+    "^bicycle_way_.*$": "bicycle_way"
+    "^mit_road.*$": "mit_road"
+    "^mixed_way.*$": "mixed_way"
+    "^path_not_forbidden$|^pedestrian_both$|^service_misc$": "no"
+
+  # Valid infrastructure categories for validation
+  valid_infrastructure_categories:
+    - "no"
+    - "mixed_way"
+    - "mit_road"
+    - "bicycle_lane"
+    - "bicycle_road"
+    - "bicycle_way"
+
+  # Target variable configuration
+  target:
+    column: "dtv_value"
+    transformation: "log1p"  # log1p, boxcox, yeo-johnson, or none
+
+# Feature configuration
+features:
+  # Raw columns expected from data sources
+  raw_columns:
+    - count
+    - population
+    - total_km
+    - n_trips
+    - n_users
+    - regiostar5
+    - dist_to_centroid_m
+    - bicycle_infrastructure
+
+  # Derived features with formulas
+  derived:
+    participation_rate:
+      formula: "n_users / population"
+      description: "Relative STADTRADELN participation rate"
+      dependencies:
+        - n_users
+        - population
+
+    route_intensity:
+      formula: "(n_users * count) / population"
+      description: "Population-weighted STADTRADELN route intensity"
+      dependencies:
+        - n_users
+        - count
+        - population
+
+    volume_per_trip:
+      formula: "(count / n_trips) * n_users"
+      description: "User-adjusted volume per trip"
+      dependencies:
+        - count
+        - n_trips
+        - n_users
+
+  # Final model feature list
+  model_features:
+    - count
+    - population
+    - total_km
+    - n_trips
+    - n_users
+    - regiostar5
+    - dist_to_centroid_m
+    - bicycle_infrastructure
+    - participation_rate
+    - route_intensity
+    - volume_per_trip
+
+# Model configuration
+models:
+  enabled:
+    - Linear Regression
+    - Random Forest
+    - Gradient Boosting
+    - XGBoost
+
+  # Hyperparameter grids (can be overridden per model)
+  hyperparameters:
+    Random Forest:
+      n_estimators: [50, 100, 200]
+      max_depth: [10, 20, null]
+      min_samples_split: [2, 5, 10]
+
+    Gradient Boosting:
+      n_estimators: [50, 100, 200]
+      learning_rate: [0.01, 0.1, 0.2]
+      max_depth: [3, 5, 7]
+
+    XGBoost:
+      n_estimators: [50, 100, 200]
+      learning_rate: [0.01, 0.1, 0.2]
+      max_depth: [3, 5, 7]
+
+# Output configuration
+output:
+  plots_dir: "./plots"
+  predictions_dir: "./predictions"
+  cache_dir: "./cache"
+
+# Logging configuration
+logging:
+  level: "INFO"
+  json_output: false
