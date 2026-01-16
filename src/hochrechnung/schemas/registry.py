@@ -6,9 +6,9 @@ Provides centralized access to all schema definitions with version tracking.
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
-import pandera as pa
+import pandera.pandas as pa
 
 from hochrechnung.schemas.campaign import CampaignMetadataSchema, DemographicsSchema
 from hochrechnung.schemas.counter import CounterLocationSchema, CounterMeasurementSchema
@@ -55,7 +55,7 @@ class SchemaRegistry:
 
     _version = "1.0.0"
 
-    _schemas: dict[str, SchemaInfo] = {
+    _schemas: ClassVar[dict[str, SchemaInfo]] = {
         "counter_location": SchemaInfo(
             name="counter_location",
             schema=CounterLocationSchema,

@@ -91,9 +91,26 @@ def validate(
     ],
 ) -> None:
     """Validate data against defined schemas."""
+    from hochrechnung.config.loader import load_config
+    from hochrechnung.validation import ConsoleReporter, ValidationRunner
+
     console.print("[blue]Running schema validation...[/blue]")
-    # TODO: Implement validation
-    console.print("[yellow]Validation not yet implemented[/yellow]")
+
+    # Load config
+    pipeline_config = load_config(config)
+
+    # Run validation
+    runner = ValidationRunner(pipeline_config)
+    results = runner.run()
+
+    # Report results
+    reporter = ConsoleReporter(console)
+    reporter.print_results(results)
+
+    # Exit with appropriate code
+    has_failures = any(r.schema_valid is False for r in results)
+    if has_failures:
+        raise typer.Exit(code=1)
 
 
 @app.command()

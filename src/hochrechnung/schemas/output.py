@@ -4,7 +4,7 @@ Pandera schemas for model output data.
 
 from typing import Optional
 
-import pandera as pa
+import pandera.pandas as pa
 from pandera.typing import Series
 
 

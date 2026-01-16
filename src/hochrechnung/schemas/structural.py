@@ -13,29 +13,22 @@ class MunicipalitySchema(pa.DataFrameModel):
     Schema for municipality (Gemeinde) data from VG250.
 
     Contains administrative boundaries and population data.
+    Note: VG250 GPKG uses uppercase column names (ARS, GEN, etc.)
     """
 
-    ars: Series[str] = pa.Field(
+    ARS: Series[str] = pa.Field(
         description="Amtlicher Regionalschlüssel (12-digit code)",
         str_length={"min_value": 12, "max_value": 12},
     )
-    name: Series[str] = pa.Field(
-        description="Municipality name",
-    )
-    population: Series[int] = pa.Field(
-        ge=0,
-        description="Population (Einwohnerzahl)",
-    )
-    land: Series[str] = pa.Field(
-        str_length={"min_value": 2, "max_value": 2},
-        description="Federal state code (2-digit)",
+    GEN: Series[str] = pa.Field(
+        description="Municipality name (Gemeindename)",
     )
 
     class Config:
         """Schema configuration."""
 
         name = "MunicipalitySchema"
-        strict = False  # Allow geometry column
+        strict = False  # Allow extra columns and geometry
         coerce = True
 
 
@@ -50,16 +43,10 @@ class RegioStarSchema(pa.DataFrameModel):
         description="Amtlicher Regionalschlüssel (12-digit code)",
         str_length={"min_value": 12, "max_value": 12},
     )
-    regiostar5: Series[int] = pa.Field(
+    RegioStaR5: Series[int] = pa.Field(
         ge=1,
         le=5,
         description="RegioStaR5 classification (1-5)",
-    )
-    regiostar7: Optional[Series[int]] = pa.Field(
-        ge=1,
-        le=7,
-        nullable=True,
-        description="RegioStaR7 classification (1-7)",
     )
 
     class Config:
@@ -72,32 +59,27 @@ class RegioStarSchema(pa.DataFrameModel):
 
 class CityCentroidSchema(pa.DataFrameModel):
     """
-    Schema for city/town centroid data.
+    Schema for city/town centroid data from OSM.
 
     Used for calculating distance-to-center features.
+    Note: OSM data uses 'osm_id' and 'osm_type' columns.
     """
 
-    id: Series[int] = pa.Field(
-        description="Unique centroid identifier",
+    osm_id: Series[int] = pa.Field(
+        description="OSM identifier",
     )
-    name: Optional[Series[str]] = pa.Field(
+    osm_type: Series[str] | None = pa.Field(
+        nullable=True,
+        description="OSM type (node/way/relation)",
+    )
+    name: Series[str] | None = pa.Field(
         nullable=True,
         description="Place name",
-    )
-    latitude: Series[float] = pa.Field(
-        ge=-90.0,
-        le=90.0,
-        description="Centroid latitude in WGS84",
-    )
-    longitude: Series[float] = pa.Field(
-        ge=-180.0,
-        le=180.0,
-        description="Centroid longitude in WGS84",
     )
 
     class Config:
         """Schema configuration."""
 
         name = "CityCentroidSchema"
-        strict = False  # Allow geometry column
+        strict = False  # Allow extra OSM columns and geometry
         coerce = True

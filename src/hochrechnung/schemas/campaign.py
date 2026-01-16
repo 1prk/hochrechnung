@@ -17,7 +17,7 @@ class CampaignMetadataSchema(pa.DataFrameModel):
     Contains temporal information about when each municipality participated.
     """
 
-    ars: Series[str] = pa.Field(
+    ags: Series[str] = pa.Field(
         description="Amtlicher Regionalschlüssel (12-digit municipality code)",
         str_length={"min_value": 12, "max_value": 12},
     )
