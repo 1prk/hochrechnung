@@ -136,14 +136,24 @@ def train(
         ),
     ] = None,
 ) -> None:
-    """Train models using the specified configuration."""
+    """
+    Train models using the specified configuration.
+
+    Outputs two model variants for each configured model:
+    - baseline: Single predictor (stadtradeln_volume only) - y ~ x
+    - enhanced: All configured features - y ~ x1, x2, ...
+    """
     import joblib
 
     from hochrechnung.config.loader import load_config
     from hochrechnung.evaluation.experiment import Experiment, ExperimentConfig
     from hochrechnung.evaluation.metrics import compute_metrics
-    from hochrechnung.modeling.data import auto_detect_data_path, load_training_data
-    from hochrechnung.modeling.training import ModelTrainer
+    from hochrechnung.modeling.data import (
+        ModelVariant,
+        auto_detect_data_path,
+        load_training_data,
+    )
+    from hochrechnung.modeling.training import ModelTrainer, TrainedModel
 
     console.print(f"[blue]Loading configuration from {config}[/blue]")
     pipeline_config = load_config(config)
@@ -159,95 +169,183 @@ def train(
     else:
         console.print(f"[dim]Using specified data: {data}[/dim]")
 
-    # Load training data
-    try:
-        training_data = load_training_data(data, pipeline_config)
-    except (FileNotFoundError, ValueError) as e:
-        console.print(f"[red]Error loading data: {e}[/red]")
-        raise typer.Exit(code=1) from e
-
-    # Print data summary
-    console.print()
-    data_table = Table(title="Training Data Summary")
-    data_table.add_column("Metric", style="cyan")
-    data_table.add_column("Value", style="green")
-
-    data_table.add_row("Total samples", str(training_data.n_samples))
-    data_table.add_row("Training samples", str(len(training_data.X_train)))
-    data_table.add_row("Test samples", str(len(training_data.X_test)))
-    data_table.add_row("Features", str(len(training_data.feature_names)))
-    data_table.add_row("Target mean", f"{training_data.target_stats['mean']:.2f}")
-    data_table.add_row("Target std", f"{training_data.target_stats['std']:.2f}")
-    data_table.add_row(
-        "Target range",
-        f"{training_data.target_stats['min']:.0f} - {training_data.target_stats['max']:.0f}",
-    )
-
-    console.print(data_table)
-
-    # Print feature list
-    console.print("\n[blue]Features:[/blue]")
-    for feat in training_data.feature_names:
-        dtype = training_data.X_train[feat].dtype
-        console.print(f"  {feat} ({dtype})")
-
     # Determine models to train
     model_names = [model] if model is not None else pipeline_config.models.enabled
 
-    console.print(f"\n[blue]Training models: {', '.join(model_names)}[/blue]")
-    if not no_tune:
-        console.print("[dim]Hyperparameter tuning enabled[/dim]")
+    # Set output directory
+    if output is None:
+        output = pipeline_config.output.cache_dir / "models"
+    output.mkdir(parents=True, exist_ok=True)
 
-    # Train models
-    trainer = ModelTrainer(pipeline_config)
-    try:
-        trained_models = trainer.train(
-            training_data.X_train,
-            training_data.y_train,
-            model_names=model_names,
-            tune_hyperparameters=not no_tune,
+    # Track all trained models across variants
+    all_trained_models: dict[str, tuple[TrainedModel, dict[str, float]]] = {}
+    variant_results: dict[ModelVariant, dict[str, dict[str, float]]] = {}
+
+    # Train both baseline and enhanced variants
+    for variant in [ModelVariant.BASELINE, ModelVariant.ENHANCED]:
+        console.print(f"\n[bold blue]{'=' * 60}[/bold blue]")
+        console.print(f"[bold blue]Training {variant.value.upper()} models[/bold blue]")
+        console.print(f"[bold blue]{'=' * 60}[/bold blue]")
+
+        # Load training data for this variant
+        try:
+            training_data = load_training_data(data, pipeline_config, variant=variant)
+        except (FileNotFoundError, ValueError) as e:
+            console.print(f"[red]Error loading data for {variant.value}: {e}[/red]")
+            raise typer.Exit(code=1) from e
+
+        # Print data summary
+        console.print()
+        data_table = Table(title=f"{variant.value.capitalize()} Data Summary")
+        data_table.add_column("Metric", style="cyan")
+        data_table.add_column("Value", style="green")
+
+        data_table.add_row("Total samples", str(training_data.n_samples))
+        data_table.add_row("Training samples", str(len(training_data.X_train)))
+        data_table.add_row("Test samples", str(len(training_data.X_test)))
+        data_table.add_row("Features", str(len(training_data.feature_names)))
+        data_table.add_row("Target mean", f"{training_data.target_stats['mean']:.2f}")
+        data_table.add_row("Target std", f"{training_data.target_stats['std']:.2f}")
+        data_table.add_row(
+            "Target range",
+            f"{training_data.target_stats['min']:.0f} - {training_data.target_stats['max']:.0f}",
         )
-    except Exception as e:
-        console.print(f"[red]Training failed: {e}[/red]")
-        raise typer.Exit(code=1) from e
+        console.print(data_table)
 
-    # Evaluate on test set
-    console.print("\n[blue]Evaluating on test set...[/blue]")
-    results_table = Table(title="Model Results")
-    results_table.add_column("Model", style="cyan")
-    results_table.add_column("R²", style="green")
-    results_table.add_column("RMSE", style="yellow")
-    results_table.add_column("MAE", style="yellow")
-    results_table.add_column("MAPE", style="yellow")
-    results_table.add_column("Best", style="magenta")
+        # Print feature list
+        console.print(f"\n[blue]{variant.value.capitalize()} features:[/blue]")
+        for feat in training_data.feature_names:
+            dtype = training_data.X_train[feat].dtype
+            console.print(f"  {feat} ({dtype})")
 
-    test_results: dict[str, dict[str, float]] = {}
+        console.print(f"\n[blue]Training models: {', '.join(model_names)}[/blue]")
+        if not no_tune:
+            console.print("[dim]Hyperparameter tuning enabled[/dim]")
+
+        # Train models for this variant
+        trainer = ModelTrainer(pipeline_config)
+        try:
+            trained_models = trainer.train(
+                training_data.X_train,
+                training_data.y_train,
+                model_names=model_names,
+                tune_hyperparameters=not no_tune,
+            )
+        except Exception as e:
+            console.print(f"[red]Training failed for {variant.value}: {e}[/red]")
+            raise typer.Exit(code=1) from e
+
+        # Evaluate on test set
+        console.print(
+            f"\n[blue]Evaluating {variant.value} models on test set...[/blue]"
+        )
+        results_table = Table(title=f"{variant.value.capitalize()} Model Results")
+        results_table.add_column("Model", style="cyan")
+        results_table.add_column("R² CV", style="green")
+        results_table.add_column("R² No CV", style="green")
+        results_table.add_column("Gap", style="yellow")
+        results_table.add_column("RMSE", style="yellow")
+        results_table.add_column("MAE", style="yellow")
+        results_table.add_column("Max Err", style="yellow")
+        results_table.add_column("SQV", style="magenta")
+        results_table.add_column("Train(s)", style="dim")
+
+        test_results: dict[str, dict[str, float]] = {}
+        for name, trained_model in trained_models.items():
+            y_pred = trained_model.pipeline.predict(training_data.X_test)
+            metrics = compute_metrics(training_data.y_test.values, y_pred)
+
+            # Merge test metrics with CV scores from training
+            test_results[name] = {
+                **metrics.to_dict(),
+                **trained_model.cv_scores,
+            }
+
+            # Store for cross-variant comparison
+            variant_key = f"{variant.value}_{name}"
+            all_trained_models[variant_key] = (trained_model, test_results[name])
+
+            # Color-code overfitting gap: green <0.05, yellow 0.05-0.10, red >0.10
+            r2_gap = trained_model.cv_scores.get("r2_gap", 0.0)
+            if r2_gap < 0.05:
+                gap_style = "[green]"
+            elif r2_gap < 0.10:
+                gap_style = "[yellow]"
+            else:
+                gap_style = "[red]"
+
+            results_table.add_row(
+                name,
+                f"{trained_model.cv_scores.get('r2_cv', 0):.4f}",
+                f"{trained_model.cv_scores.get('r2_no_cv', 0):.4f}",
+                f"{gap_style}{r2_gap:.3f}[/]",
+                f"{trained_model.cv_scores.get('rmse', 0):.1f}",
+                f"{trained_model.cv_scores.get('mae', 0):.1f}",
+                f"{trained_model.cv_scores.get('max_error', 0):.0f}",
+                f"{trained_model.cv_scores.get('sqv', 0):.4f}",
+                f"{trained_model.training_time_s:.1f}",
+            )
+
+        console.print(results_table)
+        console.print(
+            "[dim]Gap Legend: [green]<0.05[/green] low | "
+            "[yellow]0.05-0.10[/yellow] moderate | "
+            "[red]>0.10[/red] high overfitting risk[/dim]"
+        )
+        variant_results[variant] = test_results
+
+        # Save models for this variant
+        for name, trained_model in trained_models.items():
+            safe_name = name.lower().replace(" ", "_")
+            model_path = (
+                output / f"{safe_name}_{variant.value}_{pipeline_config.year}.joblib"
+            )
+            joblib.dump(trained_model.pipeline, model_path)
+            console.print(f"[green]Saved: {model_path}[/green]")
+
+    # Print comparison summary
+    console.print(f"\n[bold blue]{'=' * 60}[/bold blue]")
+    console.print("[bold blue]Model Comparison Summary[/bold blue]")
+    console.print(f"[bold blue]{'=' * 60}[/bold blue]")
+
+    comparison_table = Table(title="Baseline vs Enhanced Comparison")
+    comparison_table.add_column("Model", style="cyan")
+    comparison_table.add_column("Variant", style="magenta")
+    comparison_table.add_column("R² CV", style="green")
+    comparison_table.add_column("Gap", style="yellow")
+    comparison_table.add_column("RMSE", style="yellow")
+    comparison_table.add_column("SQV", style="magenta")
+
     best_r2 = -float("inf")
-    best_model_name = ""
+    best_model_key = ""
 
-    for name, trained_model in trained_models.items():
-        y_pred = trained_model.pipeline.predict(training_data.X_test)
-        metrics = compute_metrics(training_data.y_test.values, y_pred)
+    for variant in [ModelVariant.BASELINE, ModelVariant.ENHANCED]:
+        for name, result in variant_results[variant].items():
+            variant_key = f"{variant.value}_{name}"
 
-        test_results[name] = metrics.to_dict()
+            # Color-code overfitting gap
+            r2_gap = result.get("r2_gap", 0.0)
+            if r2_gap < 0.05:
+                gap_style = "[green]"
+            elif r2_gap < 0.10:
+                gap_style = "[yellow]"
+            else:
+                gap_style = "[red]"
 
-        if metrics.r2 > best_r2:
-            best_r2 = metrics.r2
-            best_model_name = name
+            comparison_table.add_row(
+                name,
+                variant.value,
+                f"{result.get('r2_cv', result.get('r2', 0)):.4f}",
+                f"{gap_style}{r2_gap:.3f}[/]",
+                f"{result['rmse']:.1f}",
+                f"{result.get('sqv', 0):.4f}",
+            )
+            r2_cv = result.get("r2_cv", result.get("r2", 0))
+            if r2_cv > best_r2:
+                best_r2 = r2_cv
+                best_model_key = variant_key
 
-    # Add rows to table (mark best model)
-    for name, result in test_results.items():
-        is_best = "✓" if name == best_model_name else ""
-        results_table.add_row(
-            name,
-            f"{result['r2']:.4f}",
-            f"{result['rmse']:.2f}",
-            f"{result['mae']:.2f}",
-            f"{result['mape']:.2%}",
-            is_best,
-        )
-
-    console.print(results_table)
+    console.print(comparison_table)
 
     # MLflow logging
     if not no_mlflow:
@@ -255,7 +353,7 @@ def train(
         try:
             exp_config = ExperimentConfig(
                 name=pipeline_config.mlflow.experiment_name,
-                question="Which model achieves best R² on test data?",
+                question="Which model variant achieves best R² on test data?",
                 experiment_type="model_training",
                 region=pipeline_config.region.name,
                 year=pipeline_config.year,
@@ -266,20 +364,20 @@ def train(
             # Log parameters
             experiment.log_params(
                 {
-                    "n_train": len(training_data.X_train),
-                    "n_test": len(training_data.X_test),
-                    "n_features": len(training_data.feature_names),
                     "models": ",".join(model_names),
                     "tune_hyperparameters": not no_tune,
+                    "variants": "baseline,enhanced",
                 }
             )
 
-            # Log best model metrics
-            experiment.log_metrics(test_results[best_model_name])
+            # Log metrics for best model
+            best_model, best_metrics = all_trained_models[best_model_key]
+            experiment.log_metrics(best_metrics)
+            experiment.log_params({"best_model": best_model_key})
 
             # Log best model
             experiment.log_model(
-                trained_models[best_model_name].pipeline,
+                best_model.pipeline,
                 artifact_path="best_model",
             )
 
@@ -288,25 +386,12 @@ def train(
         except Exception as e:
             console.print(f"[yellow]MLflow logging failed: {e}[/yellow]")
 
-    # Save model
-    if output is None:
-        output = pipeline_config.output.cache_dir / "models"
-
-    output.mkdir(parents=True, exist_ok=True)
-
-    for name, trained_model in trained_models.items():
-        # Sanitize model name for filename
-        safe_name = name.lower().replace(" ", "_")
-        model_path = output / f"{safe_name}_{pipeline_config.year}.joblib"
-        joblib.dump(trained_model.pipeline, model_path)
-        console.print(f"[green]Saved: {model_path}[/green]")
-
-    console.print(f"\n[green]Training complete. Best model: {best_model_name}[/green]")
+    console.print(f"\n[green]Training complete. Best model: {best_model_key}[/green]")
 
 
 @app.command()
 def predict(
-    config: Annotated[  # noqa: ARG001
+    config: Annotated[
         Path,
         typer.Option(
             "--config",
@@ -321,22 +406,91 @@ def predict(
         typer.Option(
             "--model",
             "-m",
-            help="MLflow model URI or path to model artifact.",
+            help="MLflow model URI (models:/name/version) or path to .joblib file.",
         ),
     ],
-    output: Annotated[  # noqa: ARG001
+    output: Annotated[
         Path,
         typer.Option(
             "--output",
             "-o",
-            help="Output path for predictions.",
+            help="Output path for predictions (without extension).",
         ),
     ],
+    format: Annotated[
+        str,
+        typer.Option(
+            "--format",
+            "-f",
+            help="Output format: fgb (FlatGeobuf), gpkg, parquet, or csv.",
+        ),
+    ] = "fgb",
 ) -> None:
     """Generate predictions using a trained model."""
-    console.print(f"[blue]Generating predictions with model: {model_uri}[/blue]")
-    # TODO: Implement prediction pipeline
-    console.print("[yellow]Prediction not yet implemented[/yellow]")
+    from hochrechnung.config.loader import load_config
+    from hochrechnung.modeling.inference import load_model, run_prediction
+
+    console.print(f"[blue]Loading configuration from {config}[/blue]")
+    pipeline_config = load_config(config)
+
+    console.print(f"[blue]Loading model: {model_uri}[/blue]")
+    try:
+        model = load_model(model_uri)
+    except FileNotFoundError as e:
+        console.print(f"[red]Model not found: {e}[/red]")
+        raise typer.Exit(code=1) from e
+    except Exception as e:
+        console.print(f"[red]Error loading model: {e}[/red]")
+        raise typer.Exit(code=1) from e
+
+    console.print(
+        f"[blue]Running prediction pipeline for year {pipeline_config.year}[/blue]"
+    )
+    console.print(f"[dim]Output: {output}.{format}[/dim]")
+
+    try:
+        result = run_prediction(
+            pipeline_config,
+            model,
+            output_path=output,
+            output_format=format,
+        )
+
+        # Display results
+        console.print()
+        table = Table(title="Prediction Results")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Model", result.model_name)
+        table.add_row("Traffic edges processed", str(result.n_edges))
+        table.add_row("Successful predictions", str(result.n_predictions))
+        table.add_row("Failed predictions", str(result.n_failures))
+
+        # Add prediction statistics
+        predictions = result.predictions["predicted_dtv"]
+        valid_preds = predictions.dropna()
+        if len(valid_preds) > 0:
+            table.add_row("Mean predicted DTV", f"{valid_preds.mean():.1f}")
+            table.add_row("Median predicted DTV", f"{valid_preds.median():.1f}")
+            table.add_row(
+                "DTV range",
+                f"{valid_preds.min():.0f} - {valid_preds.max():.0f}",
+            )
+
+        console.print(table)
+
+        if result.output_path:
+            console.print(
+                f"\n[green]Saved predictions to: {result.output_path}[/green]"
+            )
+
+    except FileNotFoundError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(code=1) from e
+    except Exception as e:
+        console.print(f"[red]Prediction failed: {e}[/red]")
+        raise typer.Exit(code=1) from e
 
 
 @app.command()

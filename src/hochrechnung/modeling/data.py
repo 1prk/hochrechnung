@@ -3,9 +3,14 @@ Training data loading and preparation.
 
 Loads ETL output, maps columns to model-friendly names, and prepares
 train/test splits for model training.
+
+Supports two model variants:
+- baseline: Single predictor (stadtradeln_volume only) - y ~ x
+- enhanced: All configured features - y ~ x1, x2, ...
 """
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +21,39 @@ from hochrechnung.config.settings import PipelineConfig
 from hochrechnung.utils.logging import get_logger
 
 log = get_logger(__name__)
+
+
+class ModelVariant(str, Enum):
+    """Model variant type for training."""
+
+    BASELINE = "baseline"  # Single predictor: y ~ stadtradeln_volume
+    ENHANCED = "enhanced"  # All features: y ~ x1, x2, ...
+
+
+# Baseline model uses only the STADTRADELN volume as predictor
+BASELINE_FEATURE = "stadtradeln_volume"
+BASELINE_FEATURE_ETL = "Erh_SR"  # ETL legacy name
+
+# Enhanced model features (all predictors from original model)
+# These are the ETL column names - will be renamed if rename_columns=True
+ENHANCED_FEATURES_ETL = [
+    "Erh_SR",  # stadtradeln_volume - Box-Cox transformed
+    "Streckengewicht_SR",  # route_intensity - StandardScaler
+    "TN_SR_relativ",  # participation_rate - RobustScaler
+    "OSM_Radinfra",  # infra_category - OrdinalEncoder
+    "RegioStaR5",  # regiostar5
+    "HubDist",  # dist_to_center_m
+]
+
+# Enhanced model features (model-friendly names after renaming)
+ENHANCED_FEATURES = [
+    "stadtradeln_volume",
+    "route_intensity",
+    "participation_rate",
+    "infra_category",
+    "regiostar5",
+    "dist_to_center_m",
+]
 
 # Column mapping: ETL legacy names -> model feature names
 ETL_TO_MODEL_COLUMNS: dict[str, str] = {
@@ -61,6 +99,7 @@ def load_training_data(
     config: PipelineConfig,
     *,
     rename_columns: bool = True,
+    variant: ModelVariant = ModelVariant.ENHANCED,
 ) -> TrainingData:
     """
     Load training data from ETL output CSV.
@@ -69,6 +108,7 @@ def load_training_data(
         path: Path to ETL output CSV file.
         config: Pipeline configuration.
         rename_columns: Whether to rename ETL columns to model-friendly names.
+        variant: Model variant (baseline or enhanced).
 
     Returns:
         TrainingData with train/test splits and metadata.
@@ -81,7 +121,7 @@ def load_training_data(
         msg = f"Training data file not found: {path}"
         raise FileNotFoundError(msg)
 
-    log.info("Loading training data", path=str(path))
+    log.info("Loading training data", path=str(path), variant=variant.value)
     df = pd.read_csv(path)
     log.info("Loaded raw data", rows=len(df), columns=list(df.columns))
 
@@ -95,8 +135,8 @@ def load_training_data(
     # Filter by DTV bounds
     df = _filter_by_dtv(df, target_col, config)
 
-    # Get feature columns
-    feature_cols = _get_feature_columns(df, target_col, config)
+    # Get feature columns based on variant
+    feature_cols = _get_feature_columns(df, target_col, config, variant=variant)
 
     # Validate required columns exist
     _validate_columns(df, feature_cols, target_col)
@@ -198,25 +238,64 @@ def _filter_by_dtv(
 def _get_feature_columns(
     df: pd.DataFrame,
     target_col: str,
-    config: PipelineConfig,
+    _config: PipelineConfig,
+    *,
+    variant: ModelVariant = ModelVariant.ENHANCED,
 ) -> list[str]:
-    """Get list of feature columns to use."""
-    # Use config model_features if specified
-    if config.features.model_features:
-        # Map from config feature names to available columns
-        available_features = []
-        for feature in config.features.model_features:
-            if feature in df.columns:
-                available_features.append(feature)
-            elif feature in MODEL_TO_ETL_COLUMNS:
-                etl_name = MODEL_TO_ETL_COLUMNS[feature]
-                if etl_name in df.columns:
-                    available_features.append(etl_name)
+    """
+    Get list of feature columns to use based on model variant.
 
-        if available_features:
-            return available_features
+    Args:
+        df: DataFrame with available columns.
+        target_col: Target column name (to exclude).
+        config: Pipeline configuration.
+        variant: Model variant (baseline uses single feature, enhanced uses all).
 
-    # Default: use all numeric and categorical columns except target and metadata
+    Returns:
+        List of feature column names.
+    """
+    # Baseline model: single predictor only
+    if variant == ModelVariant.BASELINE:
+        # Try model-friendly name first, then ETL legacy name
+        if BASELINE_FEATURE in df.columns:
+            return [BASELINE_FEATURE]
+        if BASELINE_FEATURE_ETL in df.columns:
+            return [BASELINE_FEATURE_ETL]
+        msg = (
+            f"Baseline feature not found. Expected '{BASELINE_FEATURE}' "
+            f"or '{BASELINE_FEATURE_ETL}'"
+        )
+        raise ValueError(msg)
+
+    # Enhanced model: use explicit feature list from original model
+    # Try model-friendly names first (after column renaming)
+    available_enhanced = [f for f in ENHANCED_FEATURES if f in df.columns]
+    if len(available_enhanced) == len(ENHANCED_FEATURES):
+        return available_enhanced
+
+    # Try ETL legacy names (before column renaming)
+    available_etl = [f for f in ENHANCED_FEATURES_ETL if f in df.columns]
+    if len(available_etl) == len(ENHANCED_FEATURES_ETL):
+        return available_etl
+
+    # Mixed: some columns renamed, some not - collect what's available
+    available_features = []
+    for model_name, etl_name in zip(ENHANCED_FEATURES, ENHANCED_FEATURES_ETL):
+        if model_name in df.columns:
+            available_features.append(model_name)
+        elif etl_name in df.columns:
+            available_features.append(etl_name)
+
+    if available_features:
+        log.warning(
+            "Not all enhanced features available",
+            expected=len(ENHANCED_FEATURES),
+            found=len(available_features),
+            features=available_features,
+        )
+        return available_features
+
+    # Fallback: use all non-metadata columns
     exclude_cols = {
         target_col,
         "id",
@@ -231,6 +310,10 @@ def _get_feature_columns(
     }
 
     feature_cols = [col for col in df.columns if col not in exclude_cols]
+    log.warning(
+        "Using fallback feature selection",
+        n_features=len(feature_cols),
+    )
 
     return feature_cols
 

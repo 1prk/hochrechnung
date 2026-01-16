@@ -15,7 +15,7 @@ mlflow:
 # Training parameters
 training:
   test_size: 0.2
-  cv_folds: 5
+  cv_folds: 10  # Paper methodology (Section 3.5)
   random_state: 1337
   min_dtv: 25
   max_dtv: null  # No upper limit by default

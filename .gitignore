@@ -58,6 +58,8 @@ htmlcov/
 *.duckdb
 *.RData
 *.RDataTmp
+*.pdf
+nul
 
 # MLflow
 mlruns/

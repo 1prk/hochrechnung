@@ -140,7 +140,7 @@ class TrainingConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     test_size: float = Field(default=0.2, ge=0.05, le=0.5)
-    cv_folds: int = Field(default=5, ge=2, le=20)
+    cv_folds: int = Field(default=10, ge=2, le=20)  # Paper methodology (Section 3.5)
     random_state: int = Field(default=1337)
     min_dtv: int = Field(default=25, ge=0, description="Minimum DTV for training")
     max_dtv: int | None = Field(default=None, description="Maximum DTV for training")
