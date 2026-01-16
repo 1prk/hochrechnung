@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import pandas as pd
+
 from hochrechnung.config.settings import PipelineConfig
 from hochrechnung.utils.logging import get_logger
 

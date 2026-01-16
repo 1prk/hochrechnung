@@ -5,6 +5,7 @@ Orchestrates all data loading, transformation, and feature engineering
 to produce a training-ready dataset.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,6 +19,7 @@ from hochrechnung.ingestion.counter import (
     load_counter_locations,
     load_counter_measurements,
 )
+from hochrechnung.ingestion.osm import load_osm_infrastructure
 from hochrechnung.ingestion.structural import (
     load_city_centroids,
     load_municipalities,
@@ -76,17 +78,40 @@ class ETLPipeline:
 
     Loads all data sources, performs spatial matching, joins with
     structural data, and outputs a training-ready dataset.
+
+    Performance optimizations:
+    - Parallel loading of independent data sources
+    - Caching of expensive intermediate results
+    - Lazy CRS conversion with reuse
+    - Copy-on-write semantics for DataFrames
     """
 
-    def __init__(self, config: PipelineConfig) -> None:
+    def __init__(
+        self,
+        config: PipelineConfig,
+        *,
+        use_cache: bool = True,
+        parallel_loading: bool = True,
+        max_workers: int = 4,
+    ) -> None:
         """
         Initialize ETL pipeline.
 
         Args:
             config: Pipeline configuration.
+            use_cache: Whether to cache intermediate results.
+            parallel_loading: Whether to load data sources in parallel.
+            max_workers: Maximum number of parallel workers for data loading.
         """
         self.config = config
         self.feature_pipeline = FeaturePipeline(config)
+        self.use_cache = use_cache
+        self.parallel_loading = parallel_loading
+        self.max_workers = max_workers
+        self._cache = _get_etl_cache(config) if use_cache else None
+
+        # Enable copy-on-write for memory efficiency (pandas 2.0+)
+        pd.options.mode.copy_on_write = True
 
     def run(self, output_path: Path | None = None) -> ETLResult:
         """
@@ -98,31 +123,44 @@ class ETLPipeline:
         Returns:
             ETLResult with training data and statistics.
         """
-        log.info("Starting ETL pipeline", year=self.config.year)
+        log.info(
+            "Starting ETL pipeline",
+            year=self.config.year,
+            parallel=self.parallel_loading,
+            cache=self.use_cache,
+        )
 
-        # Step 1: Load and compute DTV from counter data
-        log.info("Step 1: Loading counter data and computing DTV")
-        dtv_df = self._load_and_compute_dtv()
-
-        # Step 2: Load counter locations and create spatial DataFrame
-        log.info("Step 2: Loading counter locations")
-        counters_gdf = self._load_counter_locations()
+        # Steps 1-4.5: Load all independent data sources
+        # These can run in parallel as they have no dependencies on each other
+        if self.parallel_loading:
+            dtv_df, counters_gdf, traffic_gdf, osm_infra = self._load_data_parallel()
+        else:
+            dtv_df, counters_gdf, traffic_gdf, osm_infra = self._load_data_sequential()
 
         # Step 3: Merge DTV with counter locations
         log.info("Step 3: Merging DTV with counter locations")
         counters_with_dtv = self._merge_dtv_with_locations(dtv_df, counters_gdf)
         n_counters = len(counters_with_dtv)
 
-        # Step 4: Load traffic volumes
-        log.info("Step 4: Loading traffic volumes")
-        traffic_gdf = self._load_traffic_volumes()
         n_edges = len(traffic_gdf)
+
+        # Join OSM infrastructure with traffic volumes
+        log.info("Joining OSM infrastructure with traffic volumes")
+        traffic_gdf = self._join_osm_infrastructure(traffic_gdf, osm_infra)
+
+        # Prune unused columns from traffic data to reduce memory
+        # Only keep columns needed for matching and feature engineering
+        edge_columns = ["base_id", "count", "bicycle_infrastructure"]
+        traffic_gdf = self._prune_columns(
+            traffic_gdf,
+            required_columns=[*edge_columns, "geometry"],
+            dataset_name="traffic",
+        )
 
         # Step 5: Match counters to edges and capture edge attributes
         # This captures base_id, count, and bicycle_infrastructure directly
         # from the matched edge - no separate join needed
         log.info("Step 5: Matching counters to edges")
-        edge_columns = ["base_id", "count", "bicycle_infrastructure"]
         matched_counters = match_counters_to_edges(
             counters_with_dtv,
             traffic_gdf,
@@ -170,6 +208,66 @@ class ETLPipeline:
             n_matched=int(n_matched),
             output_path=output_path,
         )
+
+    def _load_data_parallel(
+        self,
+    ) -> tuple[pd.DataFrame, "gpd.GeoDataFrame", "gpd.GeoDataFrame", pd.DataFrame]:
+        """
+        Load all independent data sources in parallel.
+
+        Returns:
+            Tuple of (dtv_df, counters_gdf, traffic_gdf, osm_infra).
+        """
+        log.info("Loading data sources in parallel", workers=self.max_workers)
+
+        results: dict[str, pd.DataFrame | None] = {}
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = {
+                executor.submit(self._load_and_compute_dtv): "dtv",
+                executor.submit(self._load_counter_locations): "counters",
+                executor.submit(self._load_traffic_volumes_cached): "traffic",
+                executor.submit(self._load_osm_infrastructure): "osm",
+            }
+
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    results[name] = future.result()
+                    log.debug(f"Loaded {name} successfully")
+                except Exception as e:
+                    log.error(f"Failed to load {name}", error=str(e))
+                    raise
+
+        return (
+            results["dtv"],  # type: ignore[return-value]
+            results["counters"],  # type: ignore[return-value]
+            results["traffic"],  # type: ignore[return-value]
+            results["osm"],  # type: ignore[return-value]
+        )
+
+    def _load_data_sequential(
+        self,
+    ) -> tuple[pd.DataFrame, "gpd.GeoDataFrame", "gpd.GeoDataFrame", pd.DataFrame]:
+        """
+        Load all data sources sequentially.
+
+        Returns:
+            Tuple of (dtv_df, counters_gdf, traffic_gdf, osm_infra).
+        """
+        log.info("Step 1: Loading counter data and computing DTV")
+        dtv_df = self._load_and_compute_dtv()
+
+        log.info("Step 2: Loading counter locations")
+        counters_gdf = self._load_counter_locations()
+
+        log.info("Step 4: Loading traffic volumes")
+        traffic_gdf = self._load_traffic_volumes_cached()
+
+        log.info("Step 4.5: Loading OSM infrastructure")
+        osm_infra = self._load_osm_infrastructure()
+
+        return dtv_df, counters_gdf, traffic_gdf, osm_infra
 
     def _load_and_compute_dtv(self) -> pd.DataFrame:
         """Load counter measurements and compute DTV."""
@@ -262,6 +360,149 @@ class ETLPipeline:
         """Load traffic volume data."""
         return load_traffic_volumes(self.config, validate=False)
 
+    def _load_traffic_volumes_cached(self) -> "gpd.GeoDataFrame":
+        """
+        Load traffic volumes with caching support.
+
+        Uses pickle cache for the expensive GeoDataFrame to avoid
+        repeated file parsing on subsequent runs.
+        """
+        if self._cache is None:
+            return self._load_traffic_volumes()
+
+        # Build cache key from traffic file path
+        traffic_path = (
+            self.config.data_paths.data_root / self.config.data_paths.traffic_volumes
+        )
+        cache_key = f"traffic_volumes_{self.config.year}"
+
+        # Try to get from cache
+        cached = self._cache.get(
+            cache_key,
+            source_files=[traffic_path],
+            config_hash=self._cache.compute_config_hash(self.config.region),
+        )
+
+        if cached is not None:
+            log.info("Loaded traffic volumes from cache", rows=len(cached))
+            return cached
+
+        # Load fresh and cache
+        log.info("Loading traffic volumes (cache miss)")
+        gdf = self._load_traffic_volumes()
+
+        self._cache.set(
+            cache_key,
+            gdf,
+            source_files=[traffic_path],
+            config_hash=self._cache.compute_config_hash(self.config.region),
+        )
+
+        return gdf
+
+    def _load_osm_infrastructure(self) -> pd.DataFrame:
+        """Load OSM infrastructure classifications."""
+        osm_df = load_osm_infrastructure(self.config)
+        log.info("Loaded OSM infrastructure", rows=len(osm_df))
+        return osm_df
+
+    def _prune_columns(
+        self,
+        gdf: "gpd.GeoDataFrame",
+        required_columns: list[str],
+        dataset_name: str = "data",
+    ) -> "gpd.GeoDataFrame":
+        """
+        Drop unused columns from a GeoDataFrame to reduce memory.
+
+        Args:
+            gdf: GeoDataFrame to prune.
+            required_columns: Columns to keep.
+            dataset_name: Name for logging.
+
+        Returns:
+            GeoDataFrame with only required columns.
+        """
+        available = set(gdf.columns)
+        keep = [c for c in required_columns if c in available]
+        drop = [c for c in available if c not in keep]
+
+        if drop:
+            log.debug(
+                f"Pruning {len(drop)} columns from {dataset_name}",
+                dropped=drop[:5],  # Log first 5
+                kept=len(keep),
+            )
+            return gdf[keep]
+
+        return gdf
+
+    def _join_osm_infrastructure(
+        self, traffic_gdf: "gpd.GeoDataFrame", osm_df: pd.DataFrame
+    ) -> "gpd.GeoDataFrame":
+        """
+        Join OSM infrastructure attributes with traffic volumes.
+
+        Matches on base_id (OSM way ID).
+
+        Note: Some traffic files (e.g., *_assessed.fgb) already include
+        bicycle_infrastructure. In that case, the join is skipped.
+        """
+        import geopandas as gpd
+
+        # Skip join if traffic data already has bicycle_infrastructure
+        if "bicycle_infrastructure" in traffic_gdf.columns:
+            log.info(
+                "Traffic data already has bicycle_infrastructure, skipping OSM join",
+                rows_with_infra=traffic_gdf["bicycle_infrastructure"].notna().sum(),
+            )
+            return traffic_gdf
+
+        # Ensure base_id exists in both datasets
+        if "base_id" not in traffic_gdf.columns:
+            log.warning("Traffic data missing base_id, cannot join OSM infrastructure")
+            return traffic_gdf
+
+        if "osm_id" not in osm_df.columns:
+            log.warning("OSM data missing osm_id, cannot join infrastructure")
+            return traffic_gdf
+
+        # Convert base_id to same type for matching
+        # base_id might be float (e.g., 4865862.0), so convert to int first to avoid ".0" suffix
+        traffic_gdf = traffic_gdf.copy()
+        traffic_gdf["base_id"] = traffic_gdf["base_id"].fillna(-1).astype(int).astype(str)
+        # Remove the -1 placeholder for NaN values
+        traffic_gdf.loc[traffic_gdf["base_id"] == "-1", "base_id"] = None
+
+        osm_df = osm_df.copy()
+        osm_df["osm_id"] = osm_df["osm_id"].astype(str)
+
+        # Merge on base_id = osm_id
+        joined = traffic_gdf.merge(
+            osm_df[["osm_id", "bicycle_infrastructure"]],
+            left_on="base_id",
+            right_on="osm_id",
+            how="left",
+        )
+
+        # Drop redundant osm_id column
+        if "osm_id" in joined.columns:
+            joined = joined.drop(columns=["osm_id"])
+
+        # Ensure it's still a GeoDataFrame
+        if not isinstance(joined, gpd.GeoDataFrame):
+            joined = gpd.GeoDataFrame(
+                joined, geometry=traffic_gdf.geometry, crs=traffic_gdf.crs
+            )
+
+        log.info(
+            "Joined OSM infrastructure",
+            matched=joined["bicycle_infrastructure"].notna().sum(),
+            total=len(joined),
+        )
+
+        return joined
+
     def _join_counters_with_traffic(
         self, counters: "gpd.GeoDataFrame", traffic: "gpd.GeoDataFrame"
     ) -> "gpd.GeoDataFrame":
@@ -279,9 +520,7 @@ class ETLPipeline:
             matched["matched_fid"] = matched["matched_fid"].astype(traffic["fid"].dtype)
 
         # Merge with traffic data using fid (unique per edge)
-        traffic_cols = [
-            col for col in traffic.columns if col not in ["geometry"]
-        ]
+        traffic_cols = [col for col in traffic.columns if col not in ["geometry"]]
         traffic_subset = traffic[traffic_cols].copy()
 
         joined = matched.merge(
@@ -360,15 +599,14 @@ class ETLPipeline:
         - lon: Longitude
         - DZS_mean_SR: DTV value
         """
-        import re
-
         df = df.copy()
 
         # Normalize column names first
         df = normalize_columns(df)
 
-        # Map bicycle_infrastructure to simplified categories
+        # Map infra_category to simplified categories (after normalization)
         # Matches the old mapping dict from data_prep.py
+        # Note: normalize_columns renames bicycle_infrastructure → infra_category
         infra_mapping = {
             r"^bicycle_lane_.*$": "bicycle_lane",
             r"^bus_lane_.*$": "bicycle_lane",
@@ -379,16 +617,23 @@ class ETLPipeline:
             r"^path_not_forbidden$|^pedestrian_both$|^service_misc$": "no",
         }
 
-        if "bicycle_infrastructure" in df.columns:
-            infra_col = df["bicycle_infrastructure"].fillna("no").astype(str)
+        # Apply mapping to infra_category (not bicycle_infrastructure, which is already renamed)
+        if "infra_category" in df.columns:
+            infra_col = df["infra_category"].fillna("no").astype(str)
             for pattern, replacement in infra_mapping.items():
                 mask = infra_col.str.contains(pattern, regex=True, na=False)
                 infra_col = infra_col.where(~mask, replacement)
             # Anything not matched becomes "no"
-            valid_categories = {"bicycle_lane", "bicycle_way", "bicycle_road",
-                               "mit_road", "mixed_way", "no"}
+            valid_categories = {
+                "bicycle_lane",
+                "bicycle_way",
+                "bicycle_road",
+                "mit_road",
+                "mixed_way",
+                "no",
+            }
             infra_col = infra_col.where(infra_col.isin(valid_categories), "no")
-            df["bicycle_infrastructure"] = infra_col
+            df["infra_category"] = infra_col
 
         # Map to legacy output format
         # Note: normalize_columns renames count→stadtradeln_volume, so map that
@@ -410,10 +655,10 @@ class ETLPipeline:
         rename_dict = {k: v for k, v in output_mapping.items() if k in df.columns}
         df = df.rename(columns=rename_dict)
 
-        # Use DZS counter ID (name column) for id, not ARS
-        if "name" in df.columns and "id" not in df.columns:
+        # Use DZS counter ID (name column) for id, overwrite any edge id from traffic data
+        if "name" in df.columns:
             df["id"] = df["name"].astype(str)
-        elif "counter_id" in df.columns and "id" not in df.columns:
+        elif "counter_id" in df.columns:
             df["id"] = df["counter_id"].astype(str)
 
         # Select output columns in legacy order

@@ -97,23 +97,35 @@ class CounterMeasurementLoader(DataLoader[CounterMeasurementSchema]):
             msg = "Could not find timestamp column in counter measurements"
             raise ValueError(msg)
 
-        # Parse German date format: "Mo. 1. Mai 2023"
-        # Strip weekday prefix and convert German month names
-        german_months = {
-            "Januar": "01", "Februar": "02", "März": "03", "April": "04",
-            "Mai": "05", "Juni": "06", "Juli": "07", "August": "08",
-            "September": "09", "Oktober": "10", "November": "11", "Dezember": "12",
-        }
+        # Parse dates - handle both German format and ISO format
+        # German format: "Mo. 1. Mai 2023"
+        # ISO format: "2024-05-01 00:00:00"
+        sample_date = df[timestamp_col].astype(str).iloc[0] if len(df) > 0 else ""
 
-        # Strip weekday prefix (e.g., "Mo. ") - first 4 characters
-        date_str = df[timestamp_col].astype(str).str.slice(4)
-        # Remove periods from day: "1. Mai 2023" -> "1 Mai 2023"
-        date_str = date_str.str.replace(".", "", regex=False)
-        # Replace German month names with numbers
-        for month_de, month_num in german_months.items():
-            date_str = date_str.str.replace(month_de, month_num, regex=False)
-        # Now format is "1 05 2023" - parse as day month year
-        df[timestamp_col] = pd.to_datetime(date_str, format="%d %m %Y", errors="coerce")
+        if sample_date and sample_date[0].isdigit():
+            # ISO format detected (starts with digit like "2024-...")
+            df[timestamp_col] = pd.to_datetime(
+                df[timestamp_col], format="%Y-%m-%d %H:%M:%S", errors="coerce"
+            )
+            log.debug("Parsed dates using ISO format")
+        else:
+            # German format: "Mo. 1. Mai 2023"
+            german_months = {
+                "Januar": "01", "Februar": "02", "März": "03", "April": "04",
+                "Mai": "05", "Juni": "06", "Juli": "07", "August": "08",
+                "September": "09", "Oktober": "10", "November": "11", "Dezember": "12",
+            }
+
+            # Strip weekday prefix (e.g., "Mo. ") - first 4 characters
+            date_str = df[timestamp_col].astype(str).str.slice(4)
+            # Remove periods from day: "1. Mai 2023" -> "1 Mai 2023"
+            date_str = date_str.str.replace(".", "", regex=False)
+            # Replace German month names with numbers
+            for month_de, month_num in german_months.items():
+                date_str = date_str.str.replace(month_de, month_num, regex=False)
+            # Now format is "1 05 2023" - parse as day month year
+            df[timestamp_col] = pd.to_datetime(date_str, format="%d %m %Y", errors="coerce")
+            log.debug("Parsed dates using German format")
 
         # Identify counter columns (numeric columns that aren't the timestamp)
         counter_cols = [

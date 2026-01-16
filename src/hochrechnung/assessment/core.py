@@ -138,6 +138,12 @@ class AssessmentRunner:
         """
         Run full assessment suite.
 
+        Strategy:
+        1. Load ETL output (training_data_{year}.csv)
+        2. Try to load reference data (hessen_dauerzählstellen_{year}_osmid.csv)
+        3. If reference exists: Fast comparison between the two CSVs
+        4. If no reference: Full validation by reloading source data
+
         Returns:
             AssessmentResult with all check results.
         """
@@ -171,15 +177,33 @@ class AssessmentRunner:
             )
             return result
 
-        # Run individual checks
-        result.checks.append(self._check_dtv_values(etl_df))
-        result.checks.append(self._check_counter_locations(etl_df))
-        result.checks.append(self._check_infrastructure_values(etl_df))
-        result.checks.append(self._check_regiostar_values(etl_df))
-        result.checks.append(self._check_traffic_volume_values(etl_df))
-        result.checks.append(self._check_derived_features(etl_df))
-        result.checks.append(self._check_hub_distances(etl_df))
-        result.checks.append(self._check_value_ranges(etl_df))
+        # Check if reference data exists for fast comparison
+        reference_path = (
+            self.config.data_paths.data_root
+            / "validation"
+            / f"hessen_dauerzählstellen_{self.config.year}_osmid.csv"
+        )
+
+        if reference_path.exists():
+            log.info(
+                "Reference data found - using fast comparison",
+                reference=str(reference_path),
+            )
+            result.checks.append(self._compare_with_reference(etl_df, reference_path))
+        else:
+            log.info(
+                "No reference data - running full validation from source data",
+                expected_path=str(reference_path),
+            )
+            # Run individual checks by reloading source data
+            result.checks.append(self._check_dtv_values(etl_df))
+            result.checks.append(self._check_counter_locations(etl_df))
+            result.checks.append(self._check_infrastructure_values(etl_df))
+            result.checks.append(self._check_regiostar_values(etl_df))
+            result.checks.append(self._check_traffic_volume_values(etl_df))
+            result.checks.append(self._check_derived_features(etl_df))
+            result.checks.append(self._check_hub_distances(etl_df))
+            result.checks.append(self._check_value_ranges(etl_df))
 
         log.info(
             "Assessment complete",
@@ -779,3 +803,201 @@ class AssessmentRunner:
         if rate >= self.FAIL_THRESHOLD:
             return CheckStatus.WARN
         return CheckStatus.FAIL
+
+    def _compare_with_reference(
+        self, etl_df: pd.DataFrame, reference_path: Path
+    ) -> CheckResult:
+        """
+        Fast comparison between ETL output and reference CSV.
+
+        Compares all columns present in both datasets.
+
+        Args:
+            etl_df: ETL output DataFrame.
+            reference_path: Path to reference CSV file.
+
+        Returns:
+            CheckResult with comparison statistics.
+        """
+        try:
+            # Load reference data
+            ref_df = pd.read_csv(reference_path)
+            log.info(
+                "Loaded reference data",
+                rows=len(ref_df),
+                columns=list(ref_df.columns),
+            )
+
+            # Identify common columns to compare
+            etl_cols = set(etl_df.columns)
+            ref_cols = set(ref_df.columns)
+            common_cols = etl_cols & ref_cols
+
+            if not common_cols:
+                return CheckResult(
+                    name="reference_comparison",
+                    status=CheckStatus.SKIP,
+                    message="No common columns between ETL output and reference data",
+                    details=f"ETL columns: {etl_cols}, Reference columns: {ref_cols}",
+                )
+
+            # Match on 'id' column if present
+            if "id" in common_cols:
+                match_key = "id"
+            elif "base_id" in common_cols:
+                match_key = "base_id"
+            else:
+                return CheckResult(
+                    name="reference_comparison",
+                    status=CheckStatus.SKIP,
+                    message="No suitable key column ('id' or 'base_id') for matching",
+                )
+
+            # Prepare both DataFrames
+            etl_indexed = etl_df.set_index(match_key)
+            ref_indexed = ref_df.set_index(match_key)
+
+            # Find common IDs
+            common_ids = etl_indexed.index.intersection(ref_indexed.index)
+
+            if len(common_ids) == 0:
+                # Show sample IDs from both datasets for debugging
+                etl_sample = list(etl_indexed.index[:10])
+                ref_sample = list(ref_indexed.index[:10])
+
+                sample_info = pd.DataFrame({
+                    'etl_output_sample': pd.Series(etl_sample),
+                    'reference_sample': pd.Series(ref_sample),
+                })
+
+                return CheckResult(
+                    name="reference_comparison",
+                    status=CheckStatus.FAIL,
+                    message=f"No common IDs found between datasets using key '{match_key}'",
+                    details=f"ETL has {len(etl_indexed)} IDs, Reference has {len(ref_indexed)} IDs",
+                    sample_failures=sample_info,
+                )
+
+            # Check for partial overlap
+            etl_only = etl_indexed.index.difference(ref_indexed.index)
+            ref_only = ref_indexed.index.difference(etl_indexed.index)
+
+            if len(etl_only) > 0 or len(ref_only) > 0:
+                log.warning(
+                    "Partial ID overlap detected",
+                    common=len(common_ids),
+                    etl_only=len(etl_only),
+                    ref_only=len(ref_only),
+                )
+
+            log.info(
+                "Comparing datasets",
+                common_ids=len(common_ids),
+                etl_rows=len(etl_df),
+                ref_rows=len(ref_df),
+            )
+
+            # Compare values for common columns
+            mismatches = []
+            matches = []
+
+            for col in common_cols:
+                if col == match_key:
+                    continue  # Skip the key column
+
+                for idx in common_ids:
+                    etl_val = etl_indexed.loc[idx, col]
+                    ref_val = ref_indexed.loc[idx, col]
+
+                    # Handle missing values
+                    if pd.isna(etl_val) and pd.isna(ref_val):
+                        matches.append({"id": idx, "column": col})
+                        continue
+
+                    if pd.isna(etl_val) or pd.isna(ref_val):
+                        mismatches.append(
+                            {
+                                "id": idx,
+                                "column": col,
+                                "etl_value": etl_val,
+                                "ref_value": ref_val,
+                                "reason": "missing_value",
+                            }
+                        )
+                        continue
+
+                    # Compare numeric values
+                    if pd.api.types.is_numeric_dtype(etl_df[col]) and pd.api.types.is_numeric_dtype(
+                        ref_df[col]
+                    ):
+                        if np.isclose(etl_val, ref_val, rtol=self.FLOAT_RTOL, atol=self.FLOAT_ATOL):
+                            matches.append({"id": idx, "column": col})
+                        else:
+                            mismatches.append(
+                                {
+                                    "id": idx,
+                                    "column": col,
+                                    "etl_value": etl_val,
+                                    "ref_value": ref_val,
+                                    "diff": abs(etl_val - ref_val),
+                                }
+                            )
+                    # Compare string values
+                    else:
+                        if str(etl_val).strip() == str(ref_val).strip():
+                            matches.append({"id": idx, "column": col})
+                        else:
+                            mismatches.append(
+                                {
+                                    "id": idx,
+                                    "column": col,
+                                    "etl_value": etl_val,
+                                    "ref_value": ref_val,
+                                }
+                            )
+
+            n_checked = len(matches) + len(mismatches)
+            match_rate = len(matches) / n_checked if n_checked > 0 else 0.0
+
+            status = self._rate_to_status(match_rate)
+
+            # Build sample failures table
+            sample_failures = None
+            if mismatches:
+                # Show value mismatches first
+                sample_failures = pd.DataFrame(mismatches[:15])
+            elif len(etl_only) > 0 or len(ref_only) > 0:
+                # If no value mismatches but ID mismatch, show sample IDs
+                max_samples = 10
+                sample_data = {
+                    'etl_only_ids': pd.Series(list(etl_only[:max_samples])),
+                    'reference_only_ids': pd.Series(list(ref_only[:max_samples])),
+                }
+                sample_failures = pd.DataFrame(sample_data)
+
+            # Build details message
+            details_parts = [f"Compared {len(common_cols)} columns for {len(common_ids)} common IDs"]
+            if len(etl_only) > 0:
+                details_parts.append(f"{len(etl_only)} IDs only in ETL output")
+            if len(ref_only) > 0:
+                details_parts.append(f"{len(ref_only)} IDs only in reference")
+            details = " | ".join(details_parts)
+
+            return CheckResult(
+                name="reference_comparison",
+                status=status,
+                message=f"Reference comparison: {len(matches)}/{n_checked} values match ({match_rate:.1%})",
+                details=details,
+                n_checked=n_checked,
+                n_passed=len(matches),
+                n_failed=len(mismatches),
+                sample_failures=sample_failures,
+            )
+
+        except Exception as e:
+            log.error("Reference comparison failed", error=str(e))
+            return CheckResult(
+                name="reference_comparison",
+                status=CheckStatus.FAIL,
+                message=f"Reference comparison failed: {e}",
+            )

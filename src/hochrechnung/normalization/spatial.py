@@ -3,14 +3,17 @@ Spatial matching for counter-to-OSM edge alignment.
 
 Provides functions to spatially join counters with traffic data and
 calculate distances to city centers.
+
+Performance optimizations:
+- Cached CRS conversions to avoid repeated transforms
+- Reusable spatial indices
+- Vectorized distance calculations
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-import pandas as pd
 
-from hochrechnung.config.settings import PipelineConfig
 from hochrechnung.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -18,12 +21,65 @@ if TYPE_CHECKING:
 
 log = get_logger(__name__)
 
+# Standard CRS for metric calculations (Web Mercator)
+METRIC_CRS = "EPSG:3857"
+# Standard CRS for geographic coordinates
+GEOGRAPHIC_CRS = "EPSG:4326"
+
+
+def ensure_metric_crs(gdf: "gpd.GeoDataFrame") -> "gpd.GeoDataFrame":
+    """
+    Ensure GeoDataFrame is in metric CRS for distance calculations.
+
+    Uses EPSG:3857 (Web Mercator) which provides meter-based coordinates
+    suitable for distance calculations in most regions.
+
+    Args:
+        gdf: GeoDataFrame to convert.
+
+    Returns:
+        GeoDataFrame in EPSG:3857 CRS. Returns same object if already
+        in correct CRS to avoid unnecessary copies.
+    """
+    if gdf.crs is None:
+        log.warning("GeoDataFrame has no CRS, assuming EPSG:4326")
+        gdf = gdf.set_crs(GEOGRAPHIC_CRS)
+
+    # Check if already in target CRS
+    epsg = gdf.crs.to_epsg() if gdf.crs is not None else None
+    if epsg == 3857:
+        return gdf
+
+    return gdf.to_crs(METRIC_CRS)
+
+
+def ensure_geographic_crs(gdf: "gpd.GeoDataFrame") -> "gpd.GeoDataFrame":
+    """
+    Ensure GeoDataFrame is in geographic CRS (WGS84).
+
+    Args:
+        gdf: GeoDataFrame to convert.
+
+    Returns:
+        GeoDataFrame in EPSG:4326 CRS.
+    """
+    if gdf.crs is None:
+        log.warning("GeoDataFrame has no CRS, assuming EPSG:4326")
+        return gdf.set_crs(GEOGRAPHIC_CRS)
+
+    if gdf.crs.to_epsg() == 4326:
+        return gdf
+
+    return gdf.to_crs(GEOGRAPHIC_CRS)
+
 
 def match_counters_to_edges(
     counters: "gpd.GeoDataFrame",
     edges: "gpd.GeoDataFrame",
     max_distance_m: float = 50.0,
     edge_columns: list[str] | None = None,
+    *,
+    edges_metric: "gpd.GeoDataFrame | None" = None,
 ) -> "gpd.GeoDataFrame":
     """
     Match counter locations to nearest traffic edges.
@@ -37,11 +93,12 @@ def match_counters_to_edges(
         max_distance_m: Maximum matching distance in meters.
         edge_columns: Columns to capture from matched edges. Defaults to
             ["base_id", "count", "bicycle_infrastructure"].
+        edges_metric: Pre-converted edges in metric CRS (EPSG:3857).
+            If provided, avoids redundant CRS conversion.
 
     Returns:
         Counters with matched edge information.
     """
-    import geopandas as gpd
     from shapely.strtree import STRtree
 
     if edge_columns is None:
@@ -55,17 +112,10 @@ def match_counters_to_edges(
         capturing_columns=edge_columns,
     )
 
-    # Ensure both have CRS (default to WGS84 if missing)
-    if counters.crs is None:
-        log.warning("Counters have no CRS, assuming EPSG:4326")
-        counters = counters.set_crs("EPSG:4326")
-    if edges.crs is None:
-        log.warning("Edges have no CRS, assuming EPSG:4326")
-        edges = edges.set_crs("EPSG:4326")
-
     # Convert to metric CRS for distance calculations
-    counters_m = counters.to_crs(3857)
-    edges_m = edges.to_crs(3857)
+    # Use pre-converted edges if provided to avoid redundant conversion
+    counters_m = ensure_metric_crs(counters)
+    edges_m = edges_metric if edges_metric is not None else ensure_metric_crs(edges)
 
     # Build spatial index on edges
     valid_edges = edges_m.geometry.notna() & (~edges_m.geometry.is_empty)
@@ -121,6 +171,9 @@ def match_counters_to_edges(
 def calculate_distances_to_centroids(
     gdf: "gpd.GeoDataFrame",
     centroids: "gpd.GeoDataFrame",
+    *,
+    gdf_metric: "gpd.GeoDataFrame | None" = None,
+    centroids_metric: "gpd.GeoDataFrame | None" = None,
 ) -> "gpd.GeoDataFrame":
     """
     Calculate distance from each feature to nearest city centroid.
@@ -128,6 +181,10 @@ def calculate_distances_to_centroids(
     Args:
         gdf: GeoDataFrame with geometries.
         centroids: GeoDataFrame with city centroid points.
+        gdf_metric: Pre-converted gdf in metric CRS (EPSG:3857).
+            If provided, avoids redundant CRS conversion.
+        centroids_metric: Pre-converted centroids in metric CRS.
+            If provided, avoids redundant CRS conversion.
 
     Returns:
         GeoDataFrame with 'dist_to_center_m' column.
@@ -136,9 +193,13 @@ def calculate_distances_to_centroids(
 
     log.info("Calculating distances to centroids", n_features=len(gdf))
 
-    # Convert to metric CRS
-    gdf_m = gdf.to_crs(3857)
-    centroids_m = centroids.to_crs(3857)
+    # Convert to metric CRS, reusing pre-converted if available
+    gdf_m = gdf_metric if gdf_metric is not None else ensure_metric_crs(gdf)
+    centroids_m = (
+        centroids_metric
+        if centroids_metric is not None
+        else ensure_metric_crs(centroids)
+    )
 
     # Build spatial index on centroids
     centroid_geoms = np.array(centroids_m.geometry.values, dtype=object)
@@ -174,7 +235,7 @@ def calculate_distances_to_centroids(
 def spatial_join_municipalities(
     gdf: "gpd.GeoDataFrame",
     municipalities: "gpd.GeoDataFrame",
-    how: str = "left",
+    how: Literal["left", "right", "inner"] = "left",
 ) -> "gpd.GeoDataFrame":
     """
     Spatially join features with municipality boundaries.
@@ -182,7 +243,7 @@ def spatial_join_municipalities(
     Args:
         gdf: GeoDataFrame with geometries.
         municipalities: GeoDataFrame with municipality polygons.
-        how: Join type ('left', 'inner').
+        how: Join type ('left', 'right', 'inner').
 
     Returns:
         GeoDataFrame with municipality attributes.
@@ -191,8 +252,8 @@ def spatial_join_municipalities(
 
     log.info("Spatial join with municipalities", n_features=len(gdf))
 
-    # Ensure same CRS
-    if gdf.crs != municipalities.crs:
+    # Ensure same CRS - convert municipalities to match gdf
+    if gdf.crs is not None and gdf.crs != municipalities.crs:
         municipalities = municipalities.to_crs(gdf.crs)
 
     # Perform spatial join
@@ -204,5 +265,9 @@ def spatial_join_municipalities(
 
     matched = result["ars"].notna().sum() if "ars" in result.columns else 0
     log.info("Spatial join complete", matched=int(matched), total=len(result))
+
+    # Ensure we return a GeoDataFrame
+    if not isinstance(result, gpd.GeoDataFrame):
+        result = gpd.GeoDataFrame(result)
 
     return result

@@ -116,26 +116,43 @@ This will:
 
 ### Step 3.6: Assess ETL Output
 
-**Purpose**: Verify that ETL transformations produced correct values by comparing output with source data.
+**Purpose**: Verify that ETL output matches reference data.
 
+**Smart Assessment Strategy**:
+1. ✅ **If reference data exists** (`data/validation/hessen_dauerzählstellen_{year}_osmid.csv`):
+   - **Fast comparison**: Loads 2 CSVs and compares directly
+   - **No source data reload** - very fast!
+
+2. 🔄 **If no reference data**:
+   - **Full validation**: Reloads all source data and recalculates
+   - Verifies transformations were correct
+
+**Usage**:
 ```bash
+# Auto-detects cache/training_data_2023.csv
 uv run hochrechnung assess --config configs/hessen_2023.yaml
 ```
 
 Optional: Specify custom ETL output path
 ```bash
-uv run hochrechnung assess --config configs/hessen_2023.yaml --etl-output cache/training_data_2023.csv
+uv run hochrechnung assess --config configs/hessen_2023.yaml --etl-output cache/custom_output.csv
 ```
 
-**What this checks**:
-- **DTV values** (`DZS_mean_SR`) match recalculated DTV from counter measurements
-- **Counter locations** (`lat`, `lon`) match source counter location CSV
-- **Infrastructure categories** (`OSM_Radinfra`) are valid and match source classifications
-- **RegioStaR values** (`RegioStaR5`) are in valid range
-- **Traffic volumes** (`Erh_SR`) match source traffic volume FlatGeoBuf
-- **Derived features** (`TN_SR_relativ`, `Streckengewicht_SR`) are correctly calculated
-- **Hub distances** (`HubDist`) are in reasonable range
-- **Value ranges** for all numeric columns are within bounds
+**What gets checked (fast mode with reference data)**:
+- Direct comparison of all common columns between ETL output and reference
+- Matches by counter `id`
+- Numeric values compared with tolerance (rtol=1e-5)
+- String values compared (trimmed)
+
+**What gets checked (full validation mode - no reference)**:
+- **DTV values** (`DZS_mean_SR`) recalculated from counter measurements
+- **Counter locations** (`lat`, `lon`) compared with source CSV
+- **Infrastructure categories** (`OSM_Radinfra`) validated against source
+- **RegioStaR values** (`RegioStaR5`) range checked
+- **Traffic volumes** (`Erh_SR`) compared with source FlatGeoBuf
+- **Derived features** (`TN_SR_relativ`, `Streckengewicht_SR`) recalculated
+- **Hub distances** (`HubDist`) range validation
+- **Value ranges** for all numeric columns
 
 **Assessment Report**:
 The command will display:
@@ -176,6 +193,24 @@ uv run hochrechnung predict \
 ---
 
 ## Common Operations
+
+### Data Validation & Assessment
+
+```bash
+# Validate data schemas before ETL
+uv run hochrechnung validate --config configs/hessen_2023.yaml
+
+# Run ETL pipeline (creates cache/training_data_2023.csv)
+uv run hochrechnung etl --config configs/hessen_2023.yaml
+
+# Assess ETL output quality (auto-loads cache/training_data_2023.csv)
+# No need to re-run ETL! Just loads the cached file.
+uv run hochrechnung assess --config configs/hessen_2023.yaml
+
+# Optional: Assess with custom ETL output path
+uv run hochrechnung assess --config configs/hessen_2023.yaml \
+  --etl-output cache/custom_output.csv
+```
 
 ### Running Tests
 
@@ -251,16 +286,37 @@ uv run mlflow models download -m "models:/hessen-dtv-random-forest/1" -o ./expor
    ```python
    loader = TrafficVolumeLoader(config, chunk_size=50000)
    ```
-2. Reduce bbox to smaller area
-3. Increase swap space
+2. Increase available RAM or swap space
+3. Use region-specific PBF/FGB files (already done by default)
 
 ### Missing OSM Categorizer
 
 **Problem**: `FileNotFoundError: osmcategorizer_rust not found`
 
 **Solution**:
-1. Install osmcategorizer_rust from source
-2. Or use pre-categorized data (skip OSM processing)
+
+1. **Place the executable** in `./bin/osmcategorizer_rust.exe` (Windows) or `./bin/osmcategorizer_rust` (Linux/macOS)
+
+2. **Or install to system PATH**:
+   ```bash
+   # Build from source
+   git clone https://github.com/1prk/osmcategorizer_rust
+   cd osmcategorizer_rust
+   cargo build --release
+
+   # Copy to project bin/
+   cp target/release/osmcategorizer_rust ../hochrechnung/bin/
+   ```
+
+3. **Or use pre-assessed data**:
+   - If `data/osm-data/hessen-230101-assessed.csv` exists, categorization is skipped
+   - The ETL will load cached assessments instead
+
+**Search order**:
+1. System PATH
+2. `./bin/osmcategorizer_rust.exe` (project directory)
+3. `~/.cargo/bin/osmcategorizer_rust`
+4. `/usr/local/bin/osmcategorizer_rust`
 
 ### MLflow Connection Errors
 
@@ -280,9 +336,8 @@ uv run mlflow models download -m "models:/hessen-dtv-random-forest/1" -o ./expor
 For datasets with >1M edges:
 
 1. Use chunked loading:
-   ```yaml
-   # Not in config, but in code
-   chunk_size: 50000
+   ```python
+   loader = TrafficVolumeLoader(config, chunk_size=50000)
    ```
 
 2. Enable Parquet caching:
@@ -290,10 +345,10 @@ For datasets with >1M edges:
    cache_dataframe(gdf, path, format="parquet")
    ```
 
-3. Use spatial filtering:
-   ```python
-   loader = TrafficVolumeLoader(config, bbox=(8.0, 50.0, 9.0, 51.0))
-   ```
+3. Use region-specific data files:
+   - OSM PBF: `hessen-230101.osm.pbf` (not full planet)
+   - Traffic volumes: `SR23_Hessen_VM.fgb` (region-filtered)
+   - These are already filtered by region; no additional filtering needed
 
 ### Training Speed
 

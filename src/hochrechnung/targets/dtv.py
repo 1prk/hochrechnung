@@ -89,9 +89,9 @@ def calculate_dtv(
         missing_days = expected_days - observation_count
         zero_days = int((counts == 0).sum())
 
-        # Calculate mean (DTV)
+        # Calculate mean (DTV) and round to match legacy format
         if observation_count > 0:
-            dtv_value = float(counts.mean())
+            dtv_value = float(round(counts.mean()))
         else:
             dtv_value = 0.0
 

@@ -5,11 +5,6 @@
 region:
   code: "06"  # Federal state code for Hessen
   name: "Hessen"
-  bbox:
-    - 7.77   # min longitude
-    - 49.39  # min latitude
-    - 10.24  # max longitude
-    - 51.66  # max latitude
 
 # Temporal configuration
 temporal:
@@ -32,6 +27,9 @@ data_paths:
   counter_locations: "counter-locations/DZS_ecovisio_2024_complete.csv"
   counter_measurements: "counts/DZS_counts_ecovisio_2024.csv"
 
+  # OSM data
+  osm_pbf: "osm-data/hessen-240101.osm.pbf"
+
   # Traffic volumes from STADTRADELN GPS traces
   traffic_volumes: "trafficvolumes/SR24_Hessen_VM_assessed.fgb"
 
@@ -41,7 +39,7 @@ data_paths:
   city_centroids: "structural-data/places_centroids_hessen.gpkg"
 
   # STADTRADELN participation data
-  kommunen_stats: "kommunen-stats/kommunen_stats_ds2024.shp"
+  kommunen_stats: "kommunen-stats/kommunen_stats_ds2024_2024_10_10.shp"
   campaign_stats: "campaign/SR_TeilnehmendeKommunen2018-2024_v2.csv"
 
 # MLflow configuration

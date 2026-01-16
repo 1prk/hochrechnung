@@ -136,11 +136,25 @@ class AssessmentReporter:
                 self.console.print(f"  [dim]{check.details}[/dim]")
 
             if check.sample_failures is not None and not check.sample_failures.empty:
-                self.console.print("  [dim]Sample failures:[/dim]")
-                # Format as simple table
-                for _, row in check.sample_failures.head(5).iterrows():
-                    row_str = ", ".join(f"{k}={v}" for k, v in row.items())
-                    self.console.print(f"    {row_str}")
+                self.console.print("  [dim]Sample failures (showing up to 10):[/dim]")
+
+                # Create a Rich table for better formatting
+                sample_table = Table(
+                    show_header=True,
+                    header_style="bold dim",
+                    box=None,
+                    padding=(0, 1),
+                )
+
+                # Add columns from DataFrame
+                for col in check.sample_failures.columns:
+                    sample_table.add_column(str(col), overflow="fold")
+
+                # Add rows (up to 10)
+                for _, row in check.sample_failures.head(10).iterrows():
+                    sample_table.add_row(*[str(v) for v in row])
+
+                self.console.print(sample_table)
 
     def print_check(self, check: CheckResult) -> None:
         """

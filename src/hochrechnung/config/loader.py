@@ -145,6 +145,7 @@ def load_config(
         counter_measurements=Path(
             paths_data.get("counter_measurements", "counts/default.csv")
         ),
+        osm_pbf=Path(paths_data["osm_pbf"]) if paths_data.get("osm_pbf") else None,
         traffic_volumes=Path(
             paths_data.get("traffic_volumes", "trafficvolumes/default.fgb")
         ),
