@@ -8,7 +8,7 @@ to produce a training-ready dataset.
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 
@@ -39,11 +39,15 @@ from hochrechnung.targets.dtv import (
 )
 from hochrechnung.utils.cache import CacheManager
 from hochrechnung.utils.logging import get_logger
+from hochrechnung.verification.outliers import calculate_ratios, flag_outliers
+from hochrechnung.verification.persistence import load_verified_counters
 
 if TYPE_CHECKING:
     import geopandas as gpd
 
 log = get_logger(__name__)
+
+ETLMode = Literal["production", "verification"]
 
 
 def _get_etl_cache(config: PipelineConfig) -> CacheManager:
@@ -63,6 +67,10 @@ class ETLResult:
         n_edges: Number of edges in traffic data.
         n_matched: Number of counters matched to edges.
         output_path: Path where data was saved (if any).
+        mode: ETL mode ('production' or 'verification').
+        used_verified_counters: Whether verified counters were loaded.
+        n_flagged_outliers: Number of counters flagged as outliers (verification mode only).
+        verification_data: DataFrame with verification data (verification mode only).
     """
 
     training_data: pd.DataFrame
@@ -70,6 +78,10 @@ class ETLResult:
     n_edges: int
     n_matched: int
     output_path: Path | None = None
+    mode: ETLMode = "production"
+    used_verified_counters: bool = False
+    n_flagged_outliers: int | None = None
+    verification_data: pd.DataFrame | None = None
 
 
 class ETLPipeline:
@@ -93,6 +105,7 @@ class ETLPipeline:
         use_cache: bool = True,
         parallel_loading: bool = True,
         max_workers: int = 4,
+        mode: ETLMode = "production",
     ) -> None:
         """
         Initialize ETL pipeline.
@@ -102,12 +115,14 @@ class ETLPipeline:
             use_cache: Whether to cache intermediate results.
             parallel_loading: Whether to load data sources in parallel.
             max_workers: Maximum number of parallel workers for data loading.
+            mode: ETL mode - 'production' uses verified counters, 'verification' creates them.
         """
         self.config = config
         self.feature_pipeline = FeaturePipeline(config)
         self.use_cache = use_cache
         self.parallel_loading = parallel_loading
         self.max_workers = max_workers
+        self.mode = mode
         self._cache = _get_etl_cache(config) if use_cache else None
 
         # Enable copy-on-write for memory efficiency (pandas 2.0+)
@@ -116,6 +131,9 @@ class ETLPipeline:
     def run(self, output_path: Path | None = None) -> ETLResult:
         """
         Run the full ETL pipeline.
+
+        In production mode: Uses verified counter dataset if available.
+        In verification mode: Performs spatial matching and flags outliers for review.
 
         Args:
             output_path: Optional path to save output CSV.
@@ -126,6 +144,7 @@ class ETLPipeline:
         log.info(
             "Starting ETL pipeline",
             year=self.config.year,
+            mode=self.mode,
             parallel=self.parallel_loading,
             cache=self.use_cache,
         )
@@ -157,19 +176,67 @@ class ETLPipeline:
             dataset_name="traffic",
         )
 
-        # Step 5: Match counters to edges and capture edge attributes
-        # This captures base_id, count, and bicycle_infrastructure directly
-        # from the matched edge - no separate join needed
-        log.info("Step 5: Matching counters to edges")
-        matched_counters = match_counters_to_edges(
-            counters_with_dtv,
-            traffic_gdf,
-            max_distance_m=50.0,
-            edge_columns=edge_columns,
-        )
+        # Step 5: Load verified counters OR perform spatial matching
+        used_verified = False
+        verification_data = None
+        n_flagged_outliers = None
+
+        # Try to load verified counters in production mode
+        if self.mode == "production":
+            verified_counters = load_verified_counters(
+                self.config.data_paths.data_root, self.config.year
+            )
+
+            if verified_counters is not None:
+                log.info("Using verified counter dataset (production mode)")
+                # Join DTV with verified spatial assignments
+                matched_df = counters_with_dtv.merge(
+                    verified_counters[
+                        ["counter_id", "base_id", "count", "bicycle_infrastructure"]
+                    ],
+                    left_on="counter_id",
+                    right_on="counter_id",
+                    how="inner",
+                )
+                used_verified = True
+            else:
+                log.warning(
+                    "No verified counter dataset found, falling back to spatial matching"
+                )
+                # Fall through to spatial matching below
+
+        # Perform spatial matching if not using verified counters
+        if not used_verified:
+            log.info("Step 5: Matching counters to edges")
+            matched_counters = match_counters_to_edges(
+                counters_with_dtv,
+                traffic_gdf,
+                max_distance_m=50.0,
+                edge_columns=edge_columns,
+            )
+
+            # In verification mode: calculate ratios and flag outliers
+            if self.mode == "verification":
+                log.info("Calculating ratios and flagging outliers (verification mode)")
+                matched_counters = calculate_ratios(matched_counters)
+                matched_counters, outlier_result = flag_outliers(
+                    matched_counters, skip_verified=False
+                )
+                n_flagged_outliers = outlier_result.n_flagged
+
+                log.info(
+                    "Outlier detection complete",
+                    n_flagged=n_flagged_outliers,
+                    median_ratio=outlier_result.median_ratio,
+                )
+
+                # Store verification data for export
+                verification_data = matched_counters.copy()
+
+            matched_df = matched_counters
 
         # Filter to only matched counters (those with base_id)
-        matched_df = matched_counters[matched_counters["base_id"].notna()].copy()
+        matched_df = matched_df[matched_df["base_id"].notna()].copy()
         n_matched = len(matched_df)
         log.info("Filtered to matched counters", n_matched=n_matched)
 
@@ -199,6 +266,8 @@ class ETLPipeline:
             n_edges=n_edges,
             n_matched=int(n_matched),
             n_training_rows=len(training_data),
+            mode=self.mode,
+            used_verified=used_verified,
         )
 
         return ETLResult(
@@ -207,6 +276,10 @@ class ETLPipeline:
             n_edges=n_edges,
             n_matched=int(n_matched),
             output_path=output_path,
+            mode=self.mode,
+            used_verified_counters=used_verified,
+            n_flagged_outliers=n_flagged_outliers,
+            verification_data=verification_data,
         )
 
     def _load_data_parallel(
@@ -686,16 +759,21 @@ class ETLPipeline:
         return df[available_cols]
 
 
-def run_etl(config: PipelineConfig, output_path: Path | None = None) -> ETLResult:
+def run_etl(
+    config: PipelineConfig,
+    output_path: Path | None = None,
+    mode: ETLMode = "production",
+) -> ETLResult:
     """
     Convenience function to run ETL pipeline.
 
     Args:
         config: Pipeline configuration.
         output_path: Optional path to save output CSV.
+        mode: ETL mode - 'production' uses verified counters, 'verification' creates them.
 
     Returns:
         ETLResult with training data and statistics.
     """
-    pipeline = ETLPipeline(config)
+    pipeline = ETLPipeline(config, mode=mode)
     return pipeline.run(output_path=output_path)
