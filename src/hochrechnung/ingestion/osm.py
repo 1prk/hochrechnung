@@ -64,7 +64,6 @@ def find_osmcategorizer() -> Path | None:
 def categorize_osm_infrastructure(
     pbf_path: Path,
     output_path: Path,
-    bbox: tuple[float, float, float, float] | None = None,
     *,
     categorizer_path: Path | None = None,
     export_geometries: bool = True,
@@ -73,9 +72,8 @@ def categorize_osm_infrastructure(
     Run OSM categorizer on a PBF file.
 
     Args:
-        pbf_path: Path to input .osm.pbf file.
+        pbf_path: Path to input .osm.pbf file (region-specific PBF).
         output_path: Path for output CSV file.
-        bbox: Optional bounding box (currently unused - tool processes full file).
         categorizer_path: Optional path to categorizer executable.
         export_geometries: Whether to export WKT linestring geometries.
 
@@ -87,8 +85,8 @@ def categorize_osm_infrastructure(
         FileNotFoundError: If categorizer not found.
 
     Note:
-        The osmcategorizer_rust tool does not support bbox filtering.
-        Full file will be processed; filter results afterward if needed.
+        PBF files should be region-specific (e.g., hessen-230101.osm.pbf).
+        The tool processes the entire file; no bbox filtering available.
     """
     # Find categorizer
     exe_path = categorizer_path or find_osmcategorizer()

@@ -130,22 +130,34 @@ def dtv_results_to_dataframe(results: list[DTVResult]) -> pd.DataFrame:
         results: List of DTVResult objects.
 
     Returns:
-        DataFrame with DTV data.
+        DataFrame with DTV data. Returns empty DataFrame with proper columns if no results.
     """
-    return pd.DataFrame(
-        [
-            {
-                "counter_id": r.counter_id,
-                "dtv": r.value,
-                "observation_count": r.observation_count,
-                "missing_days": r.missing_days,
-                "zero_days": r.zero_days,
-                "quality_score": r.quality_score,
-                "is_valid": r.is_valid,
-            }
-            for r in results
-        ]
-    )
+    data = [
+        {
+            "counter_id": r.counter_id,
+            "dtv": r.value,
+            "observation_count": r.observation_count,
+            "missing_days": r.missing_days,
+            "zero_days": r.zero_days,
+            "quality_score": r.quality_score,
+            "is_valid": r.is_valid,
+        }
+        for r in results
+    ]
+
+    # If empty, create DataFrame with proper columns
+    if not data:
+        return pd.DataFrame(columns=[
+            "counter_id",
+            "dtv",
+            "observation_count",
+            "missing_days",
+            "zero_days",
+            "quality_score",
+            "is_valid",
+        ])
+
+    return pd.DataFrame(data)
 
 
 def filter_dtv_by_quality(

@@ -25,14 +25,13 @@ class TrafficVolumeLoader(GeoDataLoader[TrafficVolumeRawSchema]):
     """
     Loader for traffic volume data.
 
-    Loads from FlatGeoBuf format with optional spatial filtering.
+    Loads from FlatGeoBuf format. Files are region-specific (no bbox filtering needed).
     """
 
     def __init__(
         self,
         config: PipelineConfig,
         *,
-        bbox: tuple[float, float, float, float] | None = None,
         chunk_size: int | None = None,
     ) -> None:
         """
@@ -40,15 +39,18 @@ class TrafficVolumeLoader(GeoDataLoader[TrafficVolumeRawSchema]):
 
         Args:
             config: Pipeline configuration.
-            bbox: Optional bounding box for spatial filtering (minx, miny, maxx, maxy).
             chunk_size: Optional chunk size for memory-efficient loading.
         """
         super().__init__(config, TrafficVolumeRawSchema)
-        self.bbox = bbox or config.region.bbox
         self.chunk_size = chunk_size
 
     def _load_raw_geo(self) -> pd.DataFrame:
-        """Load traffic volumes from FlatGeoBuf."""
+        """
+        Load traffic volumes from FlatGeoBuf.
+
+        Note: Files are pre-filtered by region (e.g., SR23_Hessen_VM.fgb only contains
+        Hessen data). No bbox filtering needed during load.
+        """
         import geopandas as gpd
 
         path = self.resolve_path(self.config.data_paths.traffic_volumes)
@@ -57,17 +59,13 @@ class TrafficVolumeLoader(GeoDataLoader[TrafficVolumeRawSchema]):
             msg = f"Traffic volumes file not found: {path}"
             raise FileNotFoundError(msg)
 
-        log.info(
-            "Loading traffic volumes",
-            path=str(path),
-            bbox=self.bbox,
-        )
+        log.info("Loading traffic volumes", path=str(path))
 
-        # Load with spatial filtering
+        # Load entire file (already region-specific)
         if self.chunk_size:
             gdf = self._load_chunked(path)
         else:
-            gdf = gpd.read_file(path, bbox=self.bbox)
+            gdf = gpd.read_file(path)
 
         log.info("Loaded traffic data", rows=len(gdf))
 
@@ -89,7 +87,6 @@ class TrafficVolumeLoader(GeoDataLoader[TrafficVolumeRawSchema]):
         while True:
             chunk = pyogrio.read_dataframe(
                 path,
-                bbox=self.bbox,
                 skip_features=skip,
                 max_features=self.chunk_size,
             )
@@ -111,7 +108,6 @@ class TrafficVolumeLoader(GeoDataLoader[TrafficVolumeRawSchema]):
 def load_traffic_volumes(
     config: PipelineConfig,
     *,
-    bbox: tuple[float, float, float, float] | None = None,
     validate: bool = True,
 ) -> "gpd.GeoDataFrame":
     """
@@ -119,11 +115,10 @@ def load_traffic_volumes(
 
     Args:
         config: Pipeline configuration.
-        bbox: Optional bounding box override.
         validate: Whether to validate against schema.
 
     Returns:
         GeoDataFrame with traffic volumes.
     """
-    loader = TrafficVolumeLoader(config, bbox=bbox)
+    loader = TrafficVolumeLoader(config)
     return loader.load(validate=validate)
