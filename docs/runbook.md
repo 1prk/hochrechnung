@@ -100,6 +100,60 @@ This checks:
 - Schemas are valid
 - No unexpected missing data
 
+### Step 3.5: Run ETL Pipeline
+
+```bash
+uv run hochrechnung etl --config configs/hessen_2025.yaml
+```
+
+This will:
+- Load counter data and calculate DTV
+- Load traffic volumes
+- Match counters to OSM edges
+- Add structural data (RegioStaR, demographics, etc.)
+- Compute derived features
+- Save training data to `cache/training_data_2025.csv`
+
+### Step 3.6: Assess ETL Output
+
+**Purpose**: Verify that ETL transformations produced correct values by comparing output with source data.
+
+```bash
+uv run hochrechnung assess --config configs/hessen_2023.yaml
+```
+
+Optional: Specify custom ETL output path
+```bash
+uv run hochrechnung assess --config configs/hessen_2023.yaml --etl-output cache/training_data_2023.csv
+```
+
+**What this checks**:
+- **DTV values** (`DZS_mean_SR`) match recalculated DTV from counter measurements
+- **Counter locations** (`lat`, `lon`) match source counter location CSV
+- **Infrastructure categories** (`OSM_Radinfra`) are valid and match source classifications
+- **RegioStaR values** (`RegioStaR5`) are in valid range
+- **Traffic volumes** (`Erh_SR`) match source traffic volume FlatGeoBuf
+- **Derived features** (`TN_SR_relativ`, `Streckengewicht_SR`) are correctly calculated
+- **Hub distances** (`HubDist`) are in reasonable range
+- **Value ranges** for all numeric columns are within bounds
+
+**Assessment Report**:
+The command will display:
+- Overall status (PASS/WARN/FAIL)
+- Individual check results with match percentages
+- Sample failures for debugging (if any)
+
+**Reference Data**:
+For Hessen 2023, assessment compares against:
+- `data/validation/hessen_dauerzählstellen_2023_osmid.csv` (legacy reference)
+- Source files (counter measurements, traffic volumes, etc.)
+
+**Exit codes**:
+- `0` - Assessment passed (all checks PASS or WARN with >95% match)
+- `1` - Assessment failed (one or more checks below 80% match)
+
+**Note**: Assessment is currently designed for Hessen 2023/2024 data. A warning will be shown for other years/regions.
+
 ### Step 4: Run Training
 
 ```bash
