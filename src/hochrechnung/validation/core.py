@@ -261,10 +261,12 @@ class ValidationRunner:
         """
         Normalize ARS codes to exactly 12 digits.
 
-        ARS must be 12 digits. If truncated (leading zeros dropped),
-        pad to 12 digits with leading zeros.
+        ARS must be 12 digits. Handles two truncation cases:
+        1. Leading zeros dropped (e.g., 1234 → 000000001234)
+        2. Trailing zeros dropped (e.g., 03000000 → 030000000000)
 
-        Also handles ags (9-digit) by padding to 12 digits and renaming to ars.
+        Decision: If first 2 chars form valid state code (01-16), pad right.
+        Otherwise, pad left.
 
         Args:
             df: DataFrame potentially containing ars/ARS/ags column.
@@ -272,21 +274,42 @@ class ValidationRunner:
         Returns:
             DataFrame with normalized ARS codes.
         """
+
+        def normalize_ars_code(code: str) -> str:
+            """Normalize a single ARS code to 12 digits."""
+            code = str(code).strip()
+            if len(code) >= 12:
+                return code[:12]
+            if len(code) == 0:
+                return "000000000000"
+
+            # Check if first 2 chars are valid state code (01-16)
+            try:
+                state_code = int(code[:2])
+                if 1 <= state_code <= 16:
+                    # Valid state code - pad with trailing zeros
+                    return code.ljust(12, "0")
+            except (ValueError, IndexError):
+                pass
+
+            # Not a valid state code - pad with leading zeros
+            return code.zfill(12)
+
         # Check for ars column (lowercase)
         if "ars" in df.columns:
-            df["ars"] = df["ars"].astype(str).str.zfill(12)
+            df["ars"] = df["ars"].apply(normalize_ars_code)
 
         # Check for ARS column (uppercase)
         if "ARS" in df.columns:
-            df["ARS"] = df["ARS"].astype(str).str.zfill(12)
+            df["ARS"] = df["ARS"].apply(normalize_ars_code)
 
         # Check for ags column (9-digit code) - pad and rename to ars
         if "ags" in df.columns and "ars" not in df.columns:
-            df["ars"] = df["ags"].astype(str).str.zfill(12)
+            df["ars"] = df["ags"].apply(normalize_ars_code)
 
         # Check for gemrs_22 column (regiostar specific) - rename to ars
         if "gemrs_22" in df.columns and "ars" not in df.columns:
-            df["ars"] = df["gemrs_22"].astype(str).str.zfill(12)
+            df["ars"] = df["gemrs_22"].apply(normalize_ars_code)
 
         return df
 

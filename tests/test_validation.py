@@ -109,8 +109,7 @@ def valid_regiostar_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "ars": ["064120000000", "063110000000"],  # Exactly 12 digits
-            "regiostar5": [1, 2],
-            "regiostar7": [1, 2],
+            "RegioStaR5": [51, 52],  # Valid range 51-59
         }
     )
 
@@ -120,7 +119,7 @@ def valid_campaign_metadata_df() -> pd.DataFrame:
     """Create valid campaign metadata dataframe."""
     return pd.DataFrame(
         {
-            "ars": ["064120000000", "063110000000"],  # Exactly 12 digits
+            "ags": ["064120000000", "063110000000"],  # Exactly 12 digits
             "year": [2024, 2024],
             "start_date": pd.to_datetime(["2024-05-01", "2024-05-15"]),
             "end_date": pd.to_datetime(["2024-09-30", "2024-09-30"]),

@@ -44,9 +44,9 @@ class RegioStarSchema(pa.DataFrameModel):
         str_length={"min_value": 12, "max_value": 12},
     )
     RegioStaR5: Series[int] = pa.Field(
-        ge=1,
-        le=5,
-        description="RegioStaR5 classification (1-5)",
+        ge=51,
+        le=59,
+        description="RegioStaR5 classification (51-59)",
     )
 
     class Config:
