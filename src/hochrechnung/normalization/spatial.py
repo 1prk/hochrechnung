@@ -23,14 +23,20 @@ def match_counters_to_edges(
     counters: "gpd.GeoDataFrame",
     edges: "gpd.GeoDataFrame",
     max_distance_m: float = 50.0,
+    edge_columns: list[str] | None = None,
 ) -> "gpd.GeoDataFrame":
     """
     Match counter locations to nearest traffic edges.
+
+    Captures attributes from the matched edge directly during spatial matching
+    to ensure one-to-one correspondence (no row multiplication from joins).
 
     Args:
         counters: GeoDataFrame with counter point geometries.
         edges: GeoDataFrame with edge line geometries.
         max_distance_m: Maximum matching distance in meters.
+        edge_columns: Columns to capture from matched edges. Defaults to
+            ["base_id", "count", "bicycle_infrastructure"].
 
     Returns:
         Counters with matched edge information.
@@ -38,12 +44,24 @@ def match_counters_to_edges(
     import geopandas as gpd
     from shapely.strtree import STRtree
 
+    if edge_columns is None:
+        edge_columns = ["base_id", "count", "bicycle_infrastructure"]
+
     log.info(
         "Matching counters to edges",
         n_counters=len(counters),
         n_edges=len(edges),
         max_distance=max_distance_m,
+        capturing_columns=edge_columns,
     )
+
+    # Ensure both have CRS (default to WGS84 if missing)
+    if counters.crs is None:
+        log.warning("Counters have no CRS, assuming EPSG:4326")
+        counters = counters.set_crs("EPSG:4326")
+    if edges.crs is None:
+        log.warning("Edges have no CRS, assuming EPSG:4326")
+        edges = edges.set_crs("EPSG:4326")
 
     # Convert to metric CRS for distance calculations
     counters_m = counters.to_crs(3857)
@@ -68,9 +86,7 @@ def match_counters_to_edges(
 
     # Map results back to DataFrame
     result = counters.copy()
-    result["nearest_edge_idx"] = pd.NA
     result["nearest_edge_dist_m"] = np.nan
-    result["matched_base_id"] = pd.NA
 
     valid_indices = counters.index[valid_pts].to_numpy()
 
@@ -81,11 +97,16 @@ def match_counters_to_edges(
 
     result.loc[valid_indices[matched_pt_idx], "nearest_edge_dist_m"] = matched_distances
 
-    if "base_id" in edges.columns:
-        matched_base_ids = edges.iloc[
-            edges.index[valid_edges].to_numpy()[matched_edge_idx]
-        ]["base_id"].values
-        result.loc[valid_indices[matched_pt_idx], "matched_base_id"] = matched_base_ids
+    # Get the actual edge indices in the original edges dataframe
+    edge_original_indices = edges.index[valid_edges].to_numpy()[matched_edge_idx]
+
+    # Capture all requested columns from matched edges
+    for col in edge_columns:
+        if col in edges.columns:
+            matched_values = edges.loc[edge_original_indices, col].values
+            result.loc[valid_indices[matched_pt_idx], col] = matched_values
+        else:
+            log.warning(f"Column '{col}' not found in edges, skipping")
 
     matched_count = within_threshold.sum()
     log.info(

@@ -82,6 +82,11 @@ class DataPathsConfig(BaseModel):
     counter_locations: Path = Field(description="Path to counter location CSV")
     counter_measurements: Path = Field(description="Path to counter measurements CSV")
 
+    # OSM data
+    osm_pbf: Path | None = Field(
+        default=None, description="Path to OpenStreetMap PBF file (optional)"
+    )
+
     # Traffic volumes
     traffic_volumes: Path = Field(description="Path to STADTRADELN traffic volumes FGB")
 

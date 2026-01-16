@@ -88,7 +88,7 @@ class CounterMeasurementLoader(DataLoader[CounterMeasurementSchema]):
 
         # Find timestamp column
         timestamp_col = None
-        for col in ["Zeit", "timestamp", "date", "Date"]:
+        for col in ["Zeit", "Time", "timestamp", "date", "Date"]:
             if col in df.columns:
                 timestamp_col = col
                 break
@@ -97,8 +97,23 @@ class CounterMeasurementLoader(DataLoader[CounterMeasurementSchema]):
             msg = "Could not find timestamp column in counter measurements"
             raise ValueError(msg)
 
-        # Parse timestamps
-        df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
+        # Parse German date format: "Mo. 1. Mai 2023"
+        # Strip weekday prefix and convert German month names
+        german_months = {
+            "Januar": "01", "Februar": "02", "März": "03", "April": "04",
+            "Mai": "05", "Juni": "06", "Juli": "07", "August": "08",
+            "September": "09", "Oktober": "10", "November": "11", "Dezember": "12",
+        }
+
+        # Strip weekday prefix (e.g., "Mo. ") - first 4 characters
+        date_str = df[timestamp_col].astype(str).str.slice(4)
+        # Remove periods from day: "1. Mai 2023" -> "1 Mai 2023"
+        date_str = date_str.str.replace(".", "", regex=False)
+        # Replace German month names with numbers
+        for month_de, month_num in german_months.items():
+            date_str = date_str.str.replace(month_de, month_num, regex=False)
+        # Now format is "1 05 2023" - parse as day month year
+        df[timestamp_col] = pd.to_datetime(date_str, format="%d %m %Y", errors="coerce")
 
         # Identify counter columns (numeric columns that aren't the timestamp)
         counter_cols = [
@@ -122,11 +137,9 @@ class CounterMeasurementLoader(DataLoader[CounterMeasurementSchema]):
         df_long = df_long.dropna(subset=["timestamp", "count"])
         df_long["count"] = df_long["count"].astype(int)
 
-        # Clean counter_id (remove any suffix/prefix)
-        df_long["counter_id"] = df_long["counter_id"].str.extract(r"(\d{3}[a-zA-Z]?)")[
-            0
-        ]
-        df_long = df_long.dropna(subset=["counter_id"])
+        # Counter IDs are the column names directly (e.g., "001", "064b", "1001")
+        # Keep them as-is, just strip whitespace
+        df_long["counter_id"] = df_long["counter_id"].str.strip()
 
         return df_long
 
