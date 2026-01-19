@@ -97,21 +97,21 @@ class ModelTrainer:
             models=model_names,
         )
 
-        # Build preprocessor
+        # Identify feature types
         numeric_features = [
             col for col in X.columns if X[col].dtype in ["int64", "float64"]
         ]
         categorical_features = [col for col in X.columns if col not in numeric_features]
 
-        preprocessor = build_preprocessor(
-            self.config,
-            numeric_features=numeric_features,
-            categorical_features=categorical_features,
-        )
+        # Models that should use Box-Cox transformation per Richter et al. (2025)
+        linear_models = {"Linear Regression", "Poisson Regression", "SVR"}
 
-        # Get target transformer
+        # Get target transformer with clipping to prevent extreme extrapolation
+        # Use max observed value * 2 as upper bound
+        clip_max = float(y.max()) * 2.0
         transform_func, inverse_func = build_target_transformer(
-            self.config.preprocessing.target_transformation
+            self.config.preprocessing.target_transformation,
+            clip_max=clip_max,
         )
 
         # Train each model
@@ -120,7 +120,21 @@ class ModelTrainer:
                 log.warning("Unknown model, skipping", name=name)
                 continue
 
-            log.info("Training model", name=name)
+            # Build model-specific preprocessor
+            # Per Richter et al. (2025): Box-Cox for linear models, StandardScaler for tree-based
+            use_power_transform = name in linear_models
+            preprocessor = build_preprocessor(
+                self.config,
+                numeric_features=numeric_features,
+                categorical_features=categorical_features,
+                use_power_transform=use_power_transform,
+            )
+
+            log.info(
+                "Training model",
+                name=name,
+                use_power_transform=use_power_transform,
+            )
             trained = self._train_single_model(
                 X,
                 y,

@@ -168,6 +168,135 @@ def match_counters_to_edges(
     return result
 
 
+def find_candidate_edges(
+    counters: "gpd.GeoDataFrame",
+    edges: "gpd.GeoDataFrame",
+    max_distance_m: float = 50.0,
+    edge_columns: list[str] | None = None,
+    *,
+    edges_metric: "gpd.GeoDataFrame | None" = None,
+) -> "gpd.GeoDataFrame":
+    """
+    Find all candidate edges within threshold for each counter.
+
+    Unlike match_counters_to_edges which returns only the nearest edge,
+    this function returns all edges within the distance threshold,
+    enabling ambiguity detection.
+
+    Args:
+        counters: GeoDataFrame with counter point geometries.
+        edges: GeoDataFrame with edge line geometries.
+        max_distance_m: Maximum matching distance in meters.
+        edge_columns: Columns to capture from matched edges. Defaults to
+            ["base_id", "count", "bicycle_infrastructure"].
+        edges_metric: Pre-converted edges in metric CRS (EPSG:3857).
+
+    Returns:
+        Counters with 'candidate_edges' column containing list of dicts:
+        [{"base_id": int, "count": int, "distance": float, ...}, ...]
+    """
+    from shapely.strtree import STRtree
+
+    if edge_columns is None:
+        edge_columns = ["base_id", "count", "bicycle_infrastructure"]
+
+    log.info(
+        "Finding candidate edges for counters",
+        n_counters=len(counters),
+        n_edges=len(edges),
+        max_distance=max_distance_m,
+    )
+
+    # Convert to metric CRS for distance calculations
+    counters_m = ensure_metric_crs(counters)
+    edges_m = edges_metric if edges_metric is not None else ensure_metric_crs(edges)
+
+    # Build spatial index on edges
+    valid_edges_mask = edges_m.geometry.notna() & (~edges_m.geometry.is_empty)
+    valid_edge_indices = edges.index[valid_edges_mask].to_numpy()
+    edge_geoms = np.array(
+        edges_m.loc[valid_edges_mask, "geometry"].values, dtype=object
+    )
+    tree = STRtree(edge_geoms)
+
+    # Get valid counter points
+    valid_pts_mask = counters_m.geometry.notna() & (~counters_m.geometry.is_empty)
+    valid_counter_indices = counters.index[valid_pts_mask].to_numpy()
+    points = np.array(counters_m.loc[valid_pts_mask, "geometry"].values, dtype=object)
+
+    # Query all edges within distance for each point
+    # Returns indices of geometries within distance
+    results = tree.query(points, predicate="dwithin", distance=max_distance_m)
+
+    # results is a 2D array: [[point_indices], [edge_indices]]
+    pt_indices = results[0]
+    edge_indices = results[1]
+
+    # Calculate actual distances for matched pairs
+    # points and edge_geoms contain shapely geometries stored as object dtype
+    distances = np.array(
+        [
+            points[pi].distance(edge_geoms[ei])  # type: ignore[union-attr]
+            for pi, ei in zip(pt_indices, edge_indices)
+        ]
+    )
+
+    # Group by counter
+    result = counters.copy()
+    result["candidate_edges"] = None
+    result["candidate_edges"] = result["candidate_edges"].astype(object)
+
+    # Build candidate lists
+    for i, counter_idx in enumerate(valid_counter_indices):
+        # Find all matches for this counter
+        mask = pt_indices == i
+        if not mask.any():
+            result.at[counter_idx, "candidate_edges"] = []
+            continue
+
+        candidates = []
+        for edge_local_idx, dist in zip(edge_indices[mask], distances[mask]):
+            edge_original_idx = valid_edge_indices[edge_local_idx]
+            candidate = {"distance": float(dist)}
+
+            # Add requested columns from edge
+            for col in edge_columns:
+                if col in edges.columns:
+                    val = edges.at[edge_original_idx, col]
+                    # Handle numpy types for JSON serialization
+                    if hasattr(val, "item"):
+                        val = val.item()
+                    candidate[col] = val
+
+            candidates.append(candidate)
+
+        # Sort by distance
+        candidates.sort(key=lambda x: x["distance"])
+        result.at[counter_idx, "candidate_edges"] = candidates
+
+    # Count statistics
+    n_with_candidates = sum(
+        1
+        for idx in valid_counter_indices
+        if result.at[idx, "candidate_edges"]
+        and len(result.at[idx, "candidate_edges"]) > 0
+    )
+    n_ambiguous = sum(
+        1
+        for idx in valid_counter_indices
+        if result.at[idx, "candidate_edges"]
+        and len(result.at[idx, "candidate_edges"]) > 1
+    )
+
+    log.info(
+        "Candidate edge search complete",
+        n_with_candidates=n_with_candidates,
+        n_with_multiple=n_ambiguous,
+    )
+
+    return result
+
+
 def calculate_distances_to_centroids(
     gdf: "gpd.GeoDataFrame",
     centroids: "gpd.GeoDataFrame",

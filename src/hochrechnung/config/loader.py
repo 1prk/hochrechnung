@@ -13,6 +13,7 @@ from typing import Any
 import yaml
 
 from hochrechnung.config.settings import (
+    CuratedConfig,
     DataPathsConfig,
     FeatureConfig,
     MLflowConfig,
@@ -211,6 +212,14 @@ def load_config(
         cache_dir=Path(output_data.get("cache_dir", "./cache")),
     )
 
+    curated_data = merged.get("curated", {})
+    curated = CuratedConfig(
+        path=Path(curated_data["path"]) if curated_data.get("path") else None,
+        city_centroids=Path(curated_data["city_centroids"])
+        if curated_data.get("city_centroids")
+        else None,
+    )
+
     project_data = merged.get("project", {})
 
     return PipelineConfig(
@@ -225,4 +234,5 @@ def load_config(
         models=models,
         mlflow=mlflow,
         output=output,
+        curated=curated,
     )

@@ -29,7 +29,16 @@ log = get_logger(__name__)
 DEFAULT_CHUNK_SIZE = 50_000
 
 # Columns required for ETL pipeline - load only these to reduce memory
-REQUIRED_COLUMNS = ["base_id", "edge_id", "count", "bicycle_infrastructure", "geometry"]
+# count_forward/count_backward are directional counts for verification UI
+REQUIRED_COLUMNS = [
+    "base_id",
+    "edge_id",
+    "count",
+    "count_forward",
+    "count_backward",
+    "bicycle_infrastructure",
+    "geometry",
+]
 
 
 class TrafficVolumeLoader(GeoDataLoader[TrafficVolumeRawSchema]):

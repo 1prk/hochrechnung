@@ -108,8 +108,10 @@ features:
 models:
   enabled:
     - Linear Regression
+    - Poisson Regression
     - Random Forest
     - Gradient Boosting
+    - SVR
     - XGBoost
 
   # Hyperparameter grids (can be overridden per model)
@@ -134,6 +136,12 @@ output:
   plots_dir: "./plots"
   predictions_dir: "./predictions"
   cache_dir: "./cache"
+
+# Curated Germany-wide data configuration
+# Use with: uv run hochrechnung train --curated --year <year>
+curated:
+  path: "counts/2024-03-21_DZS_SR_ARS_Datengrundlage_ManuellErgaenzt.csv"
+  city_centroids: "structural-data/places.gpkg"
 
 # Logging configuration
 logging:
