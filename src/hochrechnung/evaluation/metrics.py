@@ -23,6 +23,7 @@ from hochrechnung.utils.logging import get_logger
 log = get_logger(__name__)
 
 # SQV scaling factor for daily traffic volumes (Friedrich et al., 2019)
+# See: https://en.wikipedia.org/wiki/GEH_statistic#Development_of_the_SQV_statistic
 SQV_SCALING_FACTOR = 10_000.0
 
 
@@ -32,23 +33,28 @@ def compute_sqv(
     scaling_factor: float = SQV_SCALING_FACTOR,
 ) -> float:
     """
-    Compute SQV (Schätzqualitätswert / estimation quality value).
+    Compute SQV (Scalable Quality Value / skalierbarer Qualitätswert).
 
     SQV measures prediction quality on a 0-1 scale where:
     - 1.0 = perfect predictions
-    - 0.0 = all predictions have error >= scaling_factor
-    - SQV > 0.85 is considered good quality (Friedrich et al., 2019)
+    - 0.0 = poor match
+    - SQV >= 0.90 = very good match
+    - SQV >= 0.85 = good match
+    - SQV >= 0.80 = acceptable match
 
-    Formula: SQV = mean(clip(1 - |error| / scaling_factor, 0, 1))
+    Formula (Friedrich et al., 2019):
+        SQV = 1 / (1 + sqrt((M - C)² / (f · C)))
+
+    Where M = modeled/predicted, C = counted/observed, f = scaling factor.
 
     Args:
-        y_true: True values.
-        y_pred: Predicted values.
-        scaling_factor: Maximum error for zero quality contribution.
+        y_true: Observed/counted values (C).
+        y_pred: Modeled/predicted values (M).
+        scaling_factor: Scaling factor f based on indicator magnitude.
             Default 10,000 for daily traffic volumes.
 
     Returns:
-        SQV value in range [0, 1].
+        Mean SQV value in range [0, 1].
     """
     y_true = np.asarray(y_true).ravel()
     y_pred = np.asarray(y_pred).ravel()
@@ -56,10 +62,15 @@ def compute_sqv(
     if len(y_true) == 0:
         return 0.0
 
-    abs_errors = np.abs(y_pred - y_true)
-    quality_scores = np.clip(1.0 - abs_errors / scaling_factor, 0.0, 1.0)
+    # Avoid division by zero for observed values
+    # Use small epsilon for zero counts
+    c_safe = np.maximum(y_true, 1e-10)
 
-    return float(np.mean(quality_scores))
+    # SQV = 1 / (1 + sqrt((M - C)² / (f · C)))
+    squared_diff = (y_pred - y_true) ** 2
+    sqv_values = 1.0 / (1.0 + np.sqrt(squared_diff / (scaling_factor * c_safe)))
+
+    return float(np.mean(sqv_values))
 
 
 @dataclass(frozen=True)
@@ -73,7 +84,7 @@ class RegressionMetrics:
         mae: Mean Absolute Error
         mape: Mean Absolute Percentage Error
         max_error: Maximum absolute error
-        sqv: SQV (Schätzqualitätswert) - estimation quality value (0-1)
+        sqv: SQV (Scalable Quality Value) - quality metric (0-1)
         n_samples: Number of samples
     """
 
@@ -119,7 +130,7 @@ class CVMetrics:
         mae: Mean Absolute Error (CV average)
         mape: Mean Absolute Percentage Error (CV average)
         max_error: Maximum absolute error (CV average)
-        sqv: SQV estimation quality value (CV average)
+        sqv: SQV Scalable Quality Value (CV average)
         training_time_s: Training time in seconds
         prediction_time_s: Prediction time in seconds per sample
     """

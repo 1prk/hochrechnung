@@ -29,6 +29,7 @@ from hochrechnung.ingestion.traffic import load_traffic_volumes
 from hochrechnung.normalization.columns import normalize_columns
 from hochrechnung.normalization.spatial import (
     calculate_distances_to_centroids,
+    find_candidate_edges,
     match_counters_to_edges,
     spatial_join_municipalities,
 )
@@ -39,7 +40,7 @@ from hochrechnung.targets.dtv import (
 )
 from hochrechnung.utils.cache import CacheManager
 from hochrechnung.utils.logging import get_logger
-from hochrechnung.verification.outliers import calculate_ratios, flag_outliers
+from hochrechnung.verification.outliers import run_all_detection
 from hochrechnung.verification.persistence import load_verified_counters
 
 if TYPE_CHECKING:
@@ -169,7 +170,14 @@ class ETLPipeline:
 
         # Prune unused columns from traffic data to reduce memory
         # Only keep columns needed for matching and feature engineering
+        # Include count_forward/count_backward for verification UI if available
         edge_columns = ["base_id", "count", "bicycle_infrastructure"]
+        optional_edge_columns = ["count_forward", "count_backward"]
+        available_optional = [
+            c for c in optional_edge_columns if c in traffic_gdf.columns
+        ]
+        edge_columns = edge_columns + available_optional
+
         traffic_gdf = self._prune_columns(
             traffic_gdf,
             required_columns=[*edge_columns, "geometry"],
@@ -215,19 +223,33 @@ class ETLPipeline:
                 edge_columns=edge_columns,
             )
 
-            # In verification mode: calculate ratios and flag outliers
+            # In verification mode: run all detection methods
             if self.mode == "verification":
-                log.info("Calculating ratios and flagging outliers (verification mode)")
-                matched_counters = calculate_ratios(matched_counters)
-                matched_counters, outlier_result = flag_outliers(
-                    matched_counters, skip_verified=False
+                log.info("Running verification detection (verification mode)")
+
+                # Find candidate edges for ambiguity detection
+                matched_counters = find_candidate_edges(
+                    matched_counters,
+                    traffic_gdf,
+                    max_distance_m=50.0,
+                    edge_columns=edge_columns,
+                )
+
+                # Merge previous verifications to preserve session state
+                matched_counters = self._merge_previous_verifications(matched_counters)
+
+                # Run all detection methods (ratios, outliers, no_volume, campaign_bias, ambiguous)
+                # skip_verified=True to preserve previous verifications
+                matched_counters, outlier_result = run_all_detection(
+                    matched_counters, skip_verified=True
                 )
                 n_flagged_outliers = outlier_result.n_flagged
 
                 log.info(
-                    "Outlier detection complete",
+                    "Detection complete",
                     n_flagged=n_flagged_outliers,
                     median_ratio=outlier_result.median_ratio,
+                    severity_breakdown=outlier_result.n_by_severity,
                 )
 
                 # Store verification data for export
@@ -479,6 +501,153 @@ class ETLPipeline:
         log.info("Loaded OSM infrastructure", rows=len(osm_df))
         return osm_df
 
+    def _merge_previous_verifications(
+        self, matched_counters: "gpd.GeoDataFrame"
+    ) -> "gpd.GeoDataFrame":
+        """
+        Merge previous verification results to preserve session state.
+
+        Loads existing verified counters and applies their:
+        - verification_status (verified/carryover)
+        - verified base_id overrides
+        - is_discarded flag
+        - verification_metadata
+
+        This ensures that when regenerating tiles, previous verifications
+        are preserved rather than starting fresh.
+
+        Args:
+            matched_counters: Counters after spatial matching.
+
+        Returns:
+            GeoDataFrame with previous verifications merged in.
+        """
+        verified_counters = load_verified_counters(
+            self.config.data_paths.data_root, self.config.year
+        )
+
+        if verified_counters is None:
+            log.info("No previous verifications found, starting fresh")
+            # Initialize verification columns with defaults
+            matched_counters["verification_status"] = "unverified"
+            matched_counters["verified_at"] = None
+            matched_counters["verification_metadata"] = ""
+            matched_counters["is_discarded"] = False
+            return matched_counters
+
+        log.info(
+            "Merging previous verifications",
+            n_verified=len(verified_counters),
+            n_matched=len(matched_counters),
+        )
+
+        # Columns to merge from verified counters
+        merge_cols = [
+            "counter_id",
+            "base_id",
+            "count",
+            "verification_status",
+            "verified_at",
+            "verification_metadata",
+            "is_discarded",
+        ]
+        # Only include columns that exist
+        merge_cols = [c for c in merge_cols if c in verified_counters.columns]
+
+        # Merge on counter_id, keeping all matched counters (left join)
+        # Suffix _verified for columns that might conflict
+        merged = matched_counters.merge(
+            verified_counters[merge_cols],
+            on="counter_id",
+            how="left",
+            suffixes=("", "_verified"),
+        )
+
+        # Determine column names after merge - suffix only added if conflict existed
+        # If matched_counters had no verification_status, it won't have _verified suffix
+        status_col = (
+            "verification_status_verified"
+            if "verification_status_verified" in merged.columns
+            else "verification_status"
+        )
+
+        # For verified counters, use their verified base_id and count
+        if status_col in merged.columns:
+            verified_mask = merged[status_col].isin(["verified", "carryover"])
+        else:
+            verified_mask = pd.Series([False] * len(merged))
+
+        if verified_mask.any():
+            # Override base_id with verified value where available
+            base_id_col = (
+                "base_id_verified" if "base_id_verified" in merged.columns else None
+            )
+            if base_id_col:
+                merged.loc[verified_mask, "base_id"] = merged.loc[
+                    verified_mask, base_id_col
+                ]
+            # Override count with verified value where available
+            count_col = "count_verified" if "count_verified" in merged.columns else None
+            if count_col:
+                verified_count_mask = verified_mask & merged[count_col].notna()
+                merged.loc[verified_count_mask, "count"] = merged.loc[
+                    verified_count_mask, count_col
+                ]
+
+        # Apply verification status - handle both suffixed and non-suffixed cases
+        if "verification_status_verified" in merged.columns:
+            # Had conflict - use _verified column and drop it
+            merged["verification_status"] = merged[
+                "verification_status_verified"
+            ].fillna("unverified")
+            merged = merged.drop(columns=["verification_status_verified"])
+        elif "verification_status" in merged.columns:
+            # No conflict - column came from verified_counters directly
+            merged["verification_status"] = merged["verification_status"].fillna(
+                "unverified"
+            )
+        else:
+            merged["verification_status"] = "unverified"
+
+        # Apply other verification fields - handle both cases
+        if "verified_at_verified" in merged.columns:
+            merged["verified_at"] = merged["verified_at_verified"]
+            merged = merged.drop(columns=["verified_at_verified"])
+        elif "verified_at" not in merged.columns:
+            merged["verified_at"] = None
+
+        if "verification_metadata_verified" in merged.columns:
+            merged["verification_metadata"] = merged[
+                "verification_metadata_verified"
+            ].fillna("")
+            merged = merged.drop(columns=["verification_metadata_verified"])
+        elif "verification_metadata" in merged.columns:
+            merged["verification_metadata"] = merged["verification_metadata"].fillna("")
+        else:
+            merged["verification_metadata"] = ""
+
+        if "is_discarded_verified" in merged.columns:
+            merged["is_discarded"] = merged["is_discarded_verified"].fillna(False)
+            merged = merged.drop(columns=["is_discarded_verified"])
+        elif "is_discarded" in merged.columns:
+            merged["is_discarded"] = merged["is_discarded"].fillna(False)
+        else:
+            merged["is_discarded"] = False
+
+        # Clean up any remaining _verified suffix columns
+        verified_cols = [c for c in merged.columns if c.endswith("_verified")]
+        if verified_cols:
+            merged = merged.drop(columns=verified_cols)
+
+        n_preserved = verified_mask.sum()
+        log.info(
+            "Merged previous verifications",
+            n_preserved=int(n_preserved),
+            n_new=len(merged) - int(n_preserved),
+        )
+
+        return merged
+
     def _prune_columns(
         self,
         gdf: "gpd.GeoDataFrame",
@@ -543,7 +712,9 @@ class ETLPipeline:
         # Convert base_id to same type for matching
         # base_id might be float (e.g., 4865862.0), so convert to int first to avoid ".0" suffix
         traffic_gdf = traffic_gdf.copy()
-        traffic_gdf["base_id"] = traffic_gdf["base_id"].fillna(-1).astype(int).astype(str)
+        traffic_gdf["base_id"] = (
+            traffic_gdf["base_id"].fillna(-1).astype(int).astype(str)
+        )
         # Remove the -1 placeholder for NaN values
         traffic_gdf.loc[traffic_gdf["base_id"] == "-1", "base_id"] = None
 

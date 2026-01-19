@@ -17,10 +17,10 @@ from hochrechnung.verification.persistence import (
 )
 
 __all__ = [
-    "VerifiedCounter",
-    "load_verified_counters",
-    "save_verified_counters",
     "OutlierResult",
+    "VerifiedCounter",
     "calculate_ratios",
     "flag_outliers",
+    "load_verified_counters",
+    "save_verified_counters",
 ]

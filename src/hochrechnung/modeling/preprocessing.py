@@ -35,10 +35,11 @@ TRANSFORMER_MAP: dict[str, type] = {
 
 
 def build_preprocessor(
-    config: PipelineConfig,
+    _config: PipelineConfig,
     *,
     numeric_features: list[str] | None = None,
     categorical_features: list[str] | None = None,
+    use_power_transform: bool = False,
 ) -> ColumnTransformer:
     """
     Build preprocessing ColumnTransformer from configuration.
@@ -47,6 +48,9 @@ def build_preprocessor(
         config: Pipeline configuration.
         numeric_features: List of numeric feature names.
         categorical_features: List of categorical feature names.
+        use_power_transform: If True, use PowerTransformer (Yeo-Johnson)
+            instead of StandardScaler. Per Richter et al. (2025), this
+            is recommended for linear models (Linear, Poisson, SVR, MLP).
 
     Returns:
         Configured ColumnTransformer.
@@ -72,12 +76,20 @@ def build_preprocessor(
 
     # Numeric transformations
     if numeric_features:
-        # Standard scaling for most numeric features
-        numeric_transformer = Pipeline(
-            steps=[
-                ("scaler", StandardScaler()),
-            ]
-        )
+        # Per Richter et al. (2025): Use Box-Cox transformation for linear models,
+        # StandardScaler for tree-based models
+        if use_power_transform:
+            numeric_transformer = Pipeline(
+                steps=[
+                    ("scaler", PowerTransformer(method="box-cox", standardize=True)),
+                ]
+            )
+        else:
+            numeric_transformer = Pipeline(
+                steps=[
+                    ("scaler", StandardScaler()),
+                ]
+            )
         transformers.append(("numeric", numeric_transformer, numeric_features))
 
     # Categorical transformations
@@ -103,9 +115,12 @@ def build_preprocessor(
         if "infra_category" in categorical_features:
             transformers.append(("infra", categorical_transformer, ["infra_category"]))
 
-        # RegioStaR is already numeric (1-5), just pass through
+        # RegioStaR is already numeric, just pass through
+        # Supports both regiostar5 (1-5) and regiostar7 (1-7)
         if "regiostar5" in categorical_features:
             transformers.append(("regiostar", "passthrough", ["regiostar5"]))
+        if "regiostar7" in categorical_features:
+            transformers.append(("regiostar", "passthrough", ["regiostar7"]))
 
     # Build ColumnTransformer
     preprocessor = ColumnTransformer(
@@ -123,20 +138,51 @@ def build_preprocessor(
     return preprocessor
 
 
+class ClippedExpm1:
+    """
+    Picklable callable for clipped expm1 inverse transformation.
+
+    Prevents extreme extrapolation by clipping predictions to reasonable bounds.
+    """
+
+    def __init__(self, clip_max: float) -> None:
+        """
+        Initialize with clipping bound.
+
+        Args:
+            clip_max: Maximum value for predictions.
+        """
+        self.clip_max = clip_max
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        """Apply clipped expm1 transformation."""
+        result = np.expm1(x)
+        return np.clip(result, 0, self.clip_max)
+
+
 def build_target_transformer(
     method: str = "log1p",
+    *,
+    clip_max: float | None = None,
 ) -> tuple[Any, Any]:
     """
     Build target variable transformer functions.
 
     Args:
         method: Transformation method ('log1p', 'boxcox', 'none').
+        clip_max: Maximum value for inverse transform clipping.
+            Prevents extreme extrapolation from linear models.
+            If None, no clipping is applied.
 
     Returns:
         Tuple of (transform_func, inverse_func).
     """
     if method == "log1p":
+        if clip_max is not None:
+            # Use picklable class for clipped inverse
+            return np.log1p, ClippedExpm1(clip_max)
         return np.log1p, np.expm1
+
     if method == "none":
         return None, None
 

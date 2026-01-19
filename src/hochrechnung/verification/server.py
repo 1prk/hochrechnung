@@ -5,7 +5,6 @@ Serves the static frontend and handles API requests for saving corrections.
 """
 
 import json
-import mimetypes
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -27,7 +26,7 @@ class VerificationHandler(BaseHTTPRequestHandler):
     year: int | None = None
     counters_df: Any = None  # pandas DataFrame
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         """Handle GET requests."""
         if self.path == "/" or self.path == "/index.html":
             self._serve_file("index.html", "text/html")
@@ -44,7 +43,15 @@ class VerificationHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404, "Not Found")
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_OPTIONS(self) -> None:
+        """Handle CORS preflight requests."""
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def do_POST(self) -> None:
         """Handle POST requests."""
         if self.path == "/api/save-corrections":
             self._save_corrections()
@@ -64,7 +71,7 @@ class VerificationHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.end_headers()
 
-        with open(file_path, "rb") as f:
+        with file_path.open("rb") as f:
             self.wfile.write(f.read())
 
     def _serve_verification_data(self) -> None:
@@ -78,22 +85,30 @@ class VerificationHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
 
-        with open(self.verification_data_path) as f:
+        with self.verification_data_path.open() as f:
             data = json.load(f)
             self.wfile.write(json.dumps(data).encode())
+
+    def _safe_send_error(self, code: int, message: str) -> None:
+        """Send error response, ignoring connection errors."""
+        try:
+            self.send_error(code, message)
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            # Client already disconnected, ignore
+            pass
 
     def _serve_tile(self) -> None:
         """Serve vector tiles from MBTiles."""
         import sqlite3
 
         if not self.mbtiles_path or not self.mbtiles_path.exists():
-            self.send_error(500, "MBTiles not found")
+            self._safe_send_error(500, "MBTiles not found")
             return
 
         # Parse tile coordinates from path: /tiles/{z}/{x}/{y}.pbf
         parts = self.path.split("/")
         if len(parts) != 5:
-            self.send_error(400, "Invalid tile path")
+            self._safe_send_error(400, "Invalid tile path")
             return
 
         try:
@@ -102,7 +117,7 @@ class VerificationHandler(BaseHTTPRequestHandler):
             y_pbf = parts[4]
             y = int(y_pbf.replace(".pbf", ""))
         except ValueError:
-            self.send_error(400, "Invalid tile coordinates")
+            self._safe_send_error(400, "Invalid tile coordinates")
             return
 
         # Query MBTiles database
@@ -122,7 +137,7 @@ class VerificationHandler(BaseHTTPRequestHandler):
             conn.close()
 
             if row is None:
-                self.send_error(404, "Tile not found")
+                self._safe_send_error(404, "Tile not found")
                 return
 
             tile_data = row[0]
@@ -135,9 +150,12 @@ class VerificationHandler(BaseHTTPRequestHandler):
 
             self.wfile.write(tile_data)
 
+        except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
+            # Client cancelled request (common during fast map panning)
+            pass
         except Exception as e:
             log.error("Failed to serve tile", error=str(e))
-            self.send_error(500, "Tile serving failed")
+            self._safe_send_error(500, "Tile serving failed")
 
     def _save_corrections(self) -> None:
         """Save counter corrections."""
@@ -158,7 +176,6 @@ class VerificationHandler(BaseHTTPRequestHandler):
                 return
 
             # Update counters DataFrame
-            import pandas as pd
 
             for change in changes:
                 counter_id = change["counter_id"]
@@ -172,9 +189,13 @@ class VerificationHandler(BaseHTTPRequestHandler):
 
                     self.counters_df.loc[mask, "verification_status"] = "verified"
                     self.counters_df.loc[mask, "verified_at"] = datetime.now()
-                    self.counters_df.loc[
-                        mask, "verification_metadata"
-                    ] = change.get("metadata", "")
+                    self.counters_df.loc[mask, "verification_metadata"] = change.get(
+                        "metadata", ""
+                    )
+                    # Handle discard flag (defaults to False if not provided)
+                    self.counters_df.loc[mask, "is_discarded"] = change.get(
+                        "is_discarded", False
+                    )
 
             # Save to CSV
             saved_path = save_verified_counters(
@@ -202,6 +223,8 @@ class VerificationHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         """Override to use our logger."""
+        # format and args are unused - we use our own logger
+        _ = format, args
         log.debug("HTTP request", method=self.command, path=self.path)
 
 
@@ -242,7 +265,7 @@ def start_verification_server(
     print(f"\n🌐 Verification UI: http://localhost:{port}")
     print(f"📊 Year: {year}")
     print(f"📁 Data: {verification_data_path}")
-    print(f"\nPress Ctrl+C to stop\n")
+    print("\nPress Ctrl+C to stop\n")
 
     try:
         server.serve_forever()

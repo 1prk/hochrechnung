@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Counter Verification - Hochrechnung</title>
+    <title>DZS-Validierung</title>
 
     <!-- MapLibre GL JS -->
     <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
@@ -105,8 +105,24 @@
             border-left: 4px solid #dc3545;
         }
 
+        .counter-item.ambiguous {
+            border-left: 4px solid #6f42c1;
+        }
+
+        .counter-item.no_volume {
+            border-left: 4px solid #0d6efd;
+        }
+
         .counter-item.warning {
             border-left: 4px solid #ffc107;
+        }
+
+        .counter-item.campaign_bias {
+            border-left: 4px solid #fd7e14;
+        }
+
+        .counter-item.carryover {
+            border-left: 4px solid #6c757d;
         }
 
         .counter-item.verified {
@@ -130,21 +146,81 @@
             padding: 0.125rem 0.5rem;
             border-radius: 0.25rem;
             font-weight: 600;
-        }
-
-        .badge-critical {
-            background: #dc3545;
             color: white;
         }
 
-        .badge-warning {
-            background: #ffc107;
-            color: #000;
+        /* Severity breakdown in header */
+        .severity-breakdown {
+            font-size: 0.75rem;
+            margin-top: 0.5rem;
+            opacity: 0.9;
         }
 
-        .badge-verified {
-            background: #28a745;
-            color: white;
+        .severity-item {
+            font-weight: 600;
+        }
+
+        /* Candidate edges list */
+        .candidates-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: #495057;
+        }
+
+        .candidates-list {
+            max-height: 150px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            border-radius: 0.25rem;
+        }
+
+        .candidate-item {
+            padding: 0.5rem;
+            border-bottom: 1px solid #dee2e6;
+            cursor: pointer;
+            font-size: 0.75rem;
+            transition: background 0.2s;
+        }
+
+        .candidate-item:last-child {
+            border-bottom: none;
+        }
+
+        .candidate-item:hover {
+            background: #e7f3ff;
+        }
+
+        .candidate-item.selected {
+            background: #cce5ff;
+            border-left: 3px solid #0066cc;
+        }
+
+        .candidate-rank {
+            display: inline-block;
+            width: 24px;
+            font-weight: 600;
+            color: #6c757d;
+        }
+
+        .candidate-info {
+            color: #495057;
+        }
+
+        .no-candidates {
+            padding: 0.5rem;
+            color: #6c757d;
+            font-size: 0.75rem;
+            font-style: italic;
+        }
+
+        /* Severity info display */
+        .severity-info {
+            margin-bottom: 0.75rem;
+            padding: 0.5rem;
+            background: #f8f9fa;
+            border-radius: 0.25rem;
+            font-size: 0.875rem;
         }
 
         .counter-name {
@@ -357,22 +433,81 @@
         .toast.error {
             border-left: 4px solid #dc3545;
         }
+
+        /* Checkbox styling */
+        .form-check {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem;
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 0.25rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .form-check input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            accent-color: #dc3545;
+        }
+
+        .form-check label {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: #856404;
+            cursor: pointer;
+            margin: 0;
+        }
+
+        .form-check-hint {
+            font-size: 0.7rem;
+            color: #856404;
+            margin-left: 26px;
+            margin-top: 0.25rem;
+        }
+
+        /* Discarded counter styling */
+        .counter-item.discarded {
+            opacity: 0.6;
+            background: #f5f5f5;
+        }
+
+        .counter-item.discarded .counter-id {
+            text-decoration: line-through;
+            color: #dc3545;
+        }
+
+        .counter-item.discarded::after {
+            content: "DISCARDED";
+            font-size: 0.65rem;
+            font-weight: 700;
+            color: #dc3545;
+            background: #f8d7da;
+            padding: 0.125rem 0.375rem;
+            border-radius: 0.25rem;
+            margin-left: 0.5rem;
+        }
     </style>
 </head>
 <body>
     <header>
-        <h1>Counter Verification – Year <span id="year">-</span></h1>
+        <div>
+            <h1>DZS-Validierung – Kampagnenjahr <span id="year">-</span></h1>
+            <div id="severity-breakdown" class="severity-breakdown"></div>
+        </div>
         <div class="stats">
             <div class="stat">
-                <span class="stat-label">Total:</span>
+                <span class="stat-label">Gesamt:</span>
                 <span class="stat-value" id="stat-total">0</span>
             </div>
             <div class="stat">
-                <span class="stat-label">Flagged:</span>
+                <span class="stat-label">zu prüfen:</span>
                 <span class="stat-value" id="stat-flagged">0</span>
             </div>
             <div class="stat">
-                <span class="stat-label">Median Ratio:</span>
+                <span class="stat-label">Median DTV/GPS:</span>
                 <span class="stat-value" id="stat-ratio">0.0</span>
             </div>
         </div>
@@ -381,26 +516,38 @@
     <main>
         <div class="sidebar">
             <div class="counter-list" id="counter-list">
-                <div class="loading">Loading counters...</div>
+                <div class="loading">Lade DZS...</div>
             </div>
             <div class="counter-editor" id="counter-editor" style="display: none;">
-                <div class="editor-header">Edit Counter <span id="edit-counter-id"></span></div>
+                <div class="editor-header">DZS bearbeiten: DZS <span id="edit-counter-id"></span></div>
+
+                <div id="severity-info" class="severity-info"></div>
+
+                <div id="candidate-edges" class="form-group"></div>
 
                 <div class="form-group">
-                    <label for="edit-base-id">OSM Way ID</label>
-                    <input type="number" id="edit-base-id" placeholder="e.g. 123456789">
-                    <div class="form-hint">Click on map to select edge</div>
+                    <label for="edit-base-id">OSM way_id</label>
+                    <input type="number" id="edit-base-id" placeholder="z.B. 123456789">
+                    <div class="form-hint">Kante auf Karte oder aus Kandidatenliste auswählen</div>
                 </div>
 
                 <div class="form-group">
-                    <label for="edit-count">Bicycle Volume</label>
+                    <label for="edit-count">SR-Verkehrsmenge</label>
                     <input type="number" id="edit-count" placeholder="e.g. 450">
-                    <div class="form-hint">Leave empty to auto-fetch from edge</div>
+                    <div class="form-hint">Leer lassen, um automatisch von der Kante abzurufen</div>
                 </div>
 
                 <div class="form-group">
-                    <label for="edit-metadata">Notes</label>
-                    <textarea id="edit-metadata" placeholder="e.g. Corrected to bike lane"></textarea>
+                    <label for="edit-metadata">Anmerkungen</label>
+                    <textarea id="edit-metadata" placeholder="z.B. DZS auf Radweg"></textarea>
+                </div>
+
+                <div class="form-check">
+                    <input type="checkbox" id="edit-discard">
+                    <label for="edit-discard">DZS von Datensatz ausschließen</label>
+                </div>
+                <div class="form-check-hint">
+                    Ausgeschlossene DZS werden bei Training/Validierung nicht verwendet, bleiben aber für Audit erhalten.
                 </div>
 
                 <div class="button-group">
@@ -413,14 +560,26 @@
         <div class="map-container">
             <div id="map"></div>
             <div class="map-legend">
-                <div class="legend-title">Counter Ratio</div>
+                <div class="legend-title">DZS-Status</div>
                 <div class="legend-item">
                     <div class="legend-color" style="background: #dc3545;"></div>
-                    <span>Critical (&gt; 2× threshold)</span>
+                    <span>Critical (extreme ratio)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #6f42c1;"></div>
+                    <span>Ambiguous (multiple candidates)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #0d6efd;"></div>
+                    <span>No Volume (missing data)</span>
                 </div>
                 <div class="legend-item">
                     <div class="legend-color" style="background: #ffc107;"></div>
-                    <span>Warning (outlier)</span>
+                    <span>Warning (ratio outlier)</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: #fd7e14;"></div>
+                    <span>Campaign Bias (high vol/low DTV)</span>
                 </div>
                 <div class="legend-item">
                     <div class="legend-color" style="background: #28a745;"></div>
@@ -428,7 +587,7 @@
                 </div>
                 <div class="legend-item">
                     <div class="legend-color" style="background: #6c757d;"></div>
-                    <span>Normal</span>
+                    <span>Normal / Carryover</span>
                 </div>
             </div>
         </div>

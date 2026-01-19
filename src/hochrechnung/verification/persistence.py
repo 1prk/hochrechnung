@@ -38,6 +38,9 @@ class VerifiedCounter:
         verification_status: Status of verification.
         verified_at: Timestamp of verification.
         verification_metadata: Free-text explanation.
+        is_discarded: Whether the counter is excluded from dataset.
+            Discarded counters are kept for audit but excluded from
+            training and validation data versioning.
     """
 
     counter_id: str
@@ -52,6 +55,7 @@ class VerifiedCounter:
     verification_status: VerificationStatus
     verified_at: datetime
     verification_metadata: str
+    is_discarded: bool = False
 
 
 def load_verified_counters(
@@ -98,12 +102,24 @@ def load_verified_counters(
     if "verified_at" in df.columns:
         df["verified_at"] = pd.to_datetime(df["verified_at"])
 
+    # Handle is_discarded column (may not exist in older files)
+    if "is_discarded" not in df.columns:
+        df["is_discarded"] = False
+    else:
+        # Ensure boolean dtype (CSV may load as string)
+        # Use infer_objects to avoid FutureWarning about silent downcasting
+        df["is_discarded"] = (
+            df["is_discarded"].fillna(False).infer_objects(copy=False).astype(bool)
+        )
+
+    n_discarded = df["is_discarded"].sum()
     log.info(
         "Loaded verified counters",
         n_counters=len(df),
         n_verified=len(df[df["verification_status"] == "verified"]),
         n_auto=len(df[df["verification_status"] == "auto"]),
         n_carryover=len(df[df["verification_status"] == "carryover"]),
+        n_discarded=n_discarded,
     )
 
     return df
@@ -153,6 +169,7 @@ def save_verified_counters(
         "verification_status",
         "verified_at",
         "verification_metadata",
+        "is_discarded",
     ]
     if "etl_version" in df.columns:
         column_order.append("etl_version")
@@ -162,14 +179,14 @@ def save_verified_counters(
     df = df[available_cols]
 
     # Sort by counter_id for stable diffs
-    df = df.sort_values("counter_id")
+    df = df.sort_values(by="counter_id")  # type: ignore[call-overload]
 
     # Save with consistent formatting
     df.to_csv(
         verified_path,
         index=False,
         encoding="utf-8",
-        line_terminator="\n",  # Unix-style for git
+        lineterminator="\n",  # Unix-style for git
     )
 
     log.info(
@@ -198,7 +215,11 @@ def _get_git_commit_hash() -> str:
             timeout=5,
         )
         return result.stdout.strip()
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+    ):
         log.warning("Could not get git commit hash")
         return "unknown"
 
@@ -254,8 +275,9 @@ def init_verified_counters_from_previous_year(
     new_verified = prev_verified[keep_cols].copy()
 
     # Join with new traffic volumes to get updated counts
-    volumes_subset = new_traffic_volumes[["base_id", "count"]].drop_duplicates(
-        subset=["base_id"]
+    volumes_cols = new_traffic_volumes[["base_id", "count"]]
+    volumes_subset = volumes_cols.drop_duplicates(  # type: ignore[call-overload]
+        subset="base_id"
     )
 
     new_verified = new_verified.merge(volumes_subset, on="base_id", how="left")
@@ -264,9 +286,14 @@ def init_verified_counters_from_previous_year(
     new_verified["osm_source"] = prev_verified["osm_source"].iloc[0]  # Inherit
     new_verified["verification_status"] = "carryover"
     new_verified["verified_at"] = datetime.now()
-    new_verified[
-        "verification_metadata"
-    ] = f"Inherited from {previous_year}, needs review"
+    new_verified["verification_metadata"] = (
+        f"Inherited from {previous_year}, needs review"
+    )
+    # Inherit discard status from previous year
+    if "is_discarded" in prev_verified.columns:
+        new_verified["is_discarded"] = prev_verified["is_discarded"].values
+    else:
+        new_verified["is_discarded"] = False
 
     log.info(
         "Initialized verified counters",

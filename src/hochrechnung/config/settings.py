@@ -178,6 +178,21 @@ class OutputConfig(BaseModel):
     cache_dir: Path = Field(default=Path("./cache"))
 
 
+class CuratedConfig(BaseModel):
+    """Curated Germany-wide data configuration."""
+
+    model_config = ConfigDict(frozen=True)
+
+    path: Path | None = Field(
+        default=None,
+        description="Path to curated counter data CSV (relative to data_root)",
+    )
+    city_centroids: Path | None = Field(
+        default=None,
+        description="Path to city centroids for distance calculation",
+    )
+
+
 class PipelineConfig(BaseModel):
     """Complete pipeline configuration."""
 
@@ -195,6 +210,7 @@ class PipelineConfig(BaseModel):
     models: ModelConfig
     mlflow: MLflowConfig
     output: OutputConfig
+    curated: CuratedConfig = Field(default_factory=CuratedConfig)
 
     @property
     def year(self) -> int:
