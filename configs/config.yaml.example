@@ -1,0 +1,181 @@
+# =============================================================================
+# Configuration Example for Bicycle Traffic Estimation Pipeline
+# =============================================================================
+#
+# This file documents all configuration options. Copy and modify for your project.
+#
+# MINIMAL CONFIG (prediction only):
+#   Only 5 fields required - see "Prediction-Only Example" below
+#
+# TRAINING CONFIG:
+#   Adds counter data paths - see "Training Example" below
+#
+# All other settings inherit from base.yaml (Germany-wide defaults)
+#
+# =============================================================================
+
+
+# =============================================================================
+# PREDICTION-ONLY EXAMPLE (minimal config)
+# =============================================================================
+# For applying a pre-trained model to new regions
+# -----------------------------------------------------------------------------
+
+# # Project identifier - drives MLflow experiment name and output paths
+# # Output: ./output/ld-2023/predictions/, ./output/ld-2023/plots/
+# project: ld-2023
+#
+# # 12-digit Amtlicher Regionalschlüssel (mandatory)
+# # First 2 digits = federal state code (e.g., 06 = Hessen)
+# # Use 00 padding for state-level: 060000000000
+# ars: "064320000000"  # Landkreis Darmstadt-Dieburg
+#
+# # Human-readable region name (optional, for logging)
+# region_name: "Landkreis Darmstadt-Dieburg"
+#
+# # Analysis year
+# year: 2023
+#
+# # Analysis period (single period, replaces old campaign_start/end)
+# period:
+#   start: "2023-05-01"
+#   end: "2023-09-30"
+#
+# # Data paths - only traffic_volumes required for prediction
+# data:
+#   traffic_volumes: "trafficvolumes/SR23_LD_VM.fgb"
+
+
+# =============================================================================
+# TRAINING EXAMPLE (with counter data)
+# =============================================================================
+# For training new models using counter measurements
+# -----------------------------------------------------------------------------
+
+# Project identifier
+project: hessen-2023
+
+# 12-digit ARS (use 00 padding for state-level analysis)
+ars: "060000000000"  # Hessen (state)
+
+# Optional: human-readable name
+region_name: "Hessen"
+
+# Analysis year
+year: 2023
+
+# Analysis period
+period:
+  start: "2023-05-01"
+  end: "2023-09-30"
+
+# Data paths
+data:
+  # Required for all modes
+  traffic_volumes: "trafficvolumes/SR23_Hessen_VM.fgb"
+
+  # Required for training (optional for prediction)
+  counter_locations: "counter-locations/DZS_ecovisio_2024_complete.csv"
+  counter_measurements: "counts/DZS_counts_ecovisio_2023.csv"
+
+  # Optional: override Germany-wide defaults
+  # osm_pbf: "osm-data/hessen-230101.osm.pbf"
+  # city_centroids: "structural-data/places_centroids_hessen.gpkg"
+
+# Optional: override training parameters
+training:
+  min_dtv: 10  # Lower threshold for Hessen
+
+
+# =============================================================================
+# FULL REFERENCE: All Available Options
+# =============================================================================
+# Most options have sensible defaults in base.yaml
+# -----------------------------------------------------------------------------
+
+# --- Required Fields ---
+# project: str           # Project identifier (e.g., "hessen-2023")
+# ars: str               # 12-digit Amtlicher Regionalschlüssel
+# year: int              # Analysis year (2018-2030)
+# period.start: date     # Analysis period start (YYYY-MM-DD)
+# period.end: date       # Analysis period end (YYYY-MM-DD)
+# data.traffic_volumes: path  # STADTRADELN traffic volumes FGB
+
+# --- Optional: Region ---
+# region_name: str       # Human-readable name (for logging)
+
+# --- Optional: Data Paths ---
+# data:
+#   root: "./data"       # Root directory for all data files
+#
+#   # Required for training only
+#   counter_locations: path     # Counter station locations CSV
+#   counter_measurements: path  # Counter measurements CSV
+#
+#   # Germany-wide defaults (override if needed)
+#   osm_pbf: "osm-data/germany-latest.osm.pbf"
+#   municipalities: "structural-data/DE_VG250.gpkg"
+#   regiostar: "structural-data/regiostar_2022.csv"
+#   city_centroids: "structural-data/places.gpkg"
+#   kommunen_stats: "kommunen-stats/kommunen_stats.shp"
+#   campaign_stats: "campaign/SR_TeilnehmendeKommunen.csv"
+
+# --- Optional: Output ---
+# output:
+#   root: "./output"     # Output root (creates {root}/{project}/...)
+
+# --- Optional: MLflow ---
+# mlflow:
+#   tracking_uri: "http://127.0.0.1:5000"
+#   experiment_name: null  # Defaults to project name
+
+# --- Optional: Training Parameters ---
+# training:
+#   test_size: 0.2       # Test set fraction
+#   cv_folds: 10         # Cross-validation folds
+#   random_state: 1337   # Random seed
+#   min_dtv: 25          # Minimum DTV threshold
+#   max_dtv: null        # Maximum DTV threshold (null = no limit)
+
+# --- Optional: Models ---
+# models:
+#   enabled:
+#     - Linear Regression
+#     - Random Forest
+#     - XGBoost
+#   hyperparameters:
+#     Random Forest:
+#       n_estimators: [50, 100, 200]
+
+# --- Optional: Preprocessing ---
+# preprocessing:
+#   target:
+#     column: "dtv_value"
+#     transformation: "log1p"
+
+
+# =============================================================================
+# ARS Reference (Amtlicher Regionalschlüssel)
+# =============================================================================
+# 12-digit code structure:
+#   Digits 1-2:   Federal state (Land)
+#   Digits 3:     Regierungsbezirk
+#   Digits 4-5:   Kreis (county/city)
+#   Digits 6-9:   Verband
+#   Digits 10-12: Gemeinde (municipality)
+#
+# Examples:
+#   060000000000  = Hessen (state)
+#   064320000000  = Landkreis Darmstadt-Dieburg
+#   064110000000  = Darmstadt (city)
+#
+# State codes (first 2 digits):
+#   01 = Schleswig-Holstein    09 = Bayern
+#   02 = Hamburg               10 = Saarland
+#   03 = Niedersachsen         11 = Berlin
+#   04 = Bremen                12 = Brandenburg
+#   05 = Nordrhein-Westfalen   13 = Mecklenburg-Vorpommern
+#   06 = Hessen                14 = Sachsen
+#   07 = Rheinland-Pfalz       15 = Sachsen-Anhalt
+#   08 = Baden-Wurttemberg     16 = Thuringen
+# =============================================================================

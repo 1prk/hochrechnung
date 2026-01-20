@@ -23,8 +23,10 @@ COLUMN_MAPPING: dict[str, str] = {
     "n": "stadtradeln_volume",
     "Erh_SR": "stadtradeln_volume",
     # Infrastructure
-    "bicycle_infrastructure": "infra_category",
-    "OSM_Radinfra": "infra_category",
+    # NOTE: bicycle_infrastructure is NOT mapped here - it must go through
+    # apply_infrastructure_mapping() first to simplify the raw OSM categories
+    # (e.g., "mit_road_both" → "mit_road") before becoming infra_category.
+    "OSM_Radinfra": "infra_category",  # ETL data is already simplified
     # Identifiers
     "Regionalschlüssel_ARS": "ars",
     "ARS": "ars",

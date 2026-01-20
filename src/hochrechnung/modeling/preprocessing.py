@@ -8,7 +8,6 @@ from typing import Any
 
 import numpy as np
 from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import (
     FunctionTransformer,
     OneHotEncoder,
@@ -39,18 +38,28 @@ def build_preprocessor(
     *,
     numeric_features: list[str] | None = None,
     categorical_features: list[str] | None = None,
-    use_power_transform: bool = False,
+    _use_power_transform: bool = False,
 ) -> ColumnTransformer:
     """
-    Build preprocessing ColumnTransformer from configuration.
+    Build preprocessing ColumnTransformer with feature-specific transformers.
+
+    Follows the old repo's approach: different transformers for different feature types.
+    This is critical for model performance - applying the same transformation to all
+    features destroys the relationships between them.
+
+    Feature groups:
+    - stadtradeln_volume: Box-Cox (PowerTransformer) - main predictor, highly skewed
+    - dist_to_center_m: StandardScaler - continuous spatial feature
+    - participation_rate, route_intensity: RobustScaler - derived ratios with outliers
+    - infra_category: OrdinalEncoder - categorical with natural ordering
+    - regiostar7: passthrough - already ordinal encoded (71-77)
 
     Args:
         config: Pipeline configuration.
         numeric_features: List of numeric feature names.
         categorical_features: List of categorical feature names.
-        use_power_transform: If True, use PowerTransformer (Yeo-Johnson)
-            instead of StandardScaler. Per Richter et al. (2025), this
-            is recommended for linear models (Linear, Poisson, SVR, MLP).
+        use_power_transform: Ignored (kept for API compatibility).
+            Feature-specific transformers are always used.
 
     Returns:
         Configured ColumnTransformer.
@@ -61,40 +70,50 @@ def build_preprocessor(
     if numeric_features is None:
         numeric_features = [
             "stadtradeln_volume",
-            "population",
-            "total_km",
-            "n_trips",
-            "n_users",
             "dist_to_center_m",
             "participation_rate",
             "route_intensity",
-            "volume_per_trip",
         ]
 
     if categorical_features is None:
-        categorical_features = ["infra_category", "regiostar5"]
+        categorical_features = ["infra_category", "regiostar7"]
 
-    # Numeric transformations
-    if numeric_features:
-        # Per Richter et al. (2025): Use Box-Cox transformation for linear models,
-        # StandardScaler for tree-based models
-        if use_power_transform:
-            numeric_transformer = Pipeline(
-                steps=[
-                    ("scaler", PowerTransformer(method="box-cox", standardize=True)),
-                ]
-            )
-        else:
-            numeric_transformer = Pipeline(
-                steps=[
-                    ("scaler", StandardScaler()),
-                ]
-            )
-        transformers.append(("numeric", numeric_transformer, numeric_features))
+    # Feature-specific transformers (matching old repo's config.yaml)
+    # 1. Box-Cox ONLY for stadtradeln_volume - the main predictor, highly skewed
+    if "stadtradeln_volume" in numeric_features:
+        transformers.append((
+            "boxcox_stadtradeln",
+            PowerTransformer(method="box-cox", standardize=True),
+            ["stadtradeln_volume"],
+        ))
 
-    # Categorical transformations
-    if categorical_features:
-        # Ordinal encoding for infrastructure categories
+    # 2. StandardScaler for continuous spatial/demographic features
+    standard_features = [
+        f for f in numeric_features
+        if f in {"dist_to_center_m", "population", "total_km"}
+    ]
+    if standard_features:
+        transformers.append((
+            "standard_numeric",
+            StandardScaler(),
+            standard_features,
+        ))
+
+    # 3. RobustScaler for derived ratio features (participation_rate, route_intensity)
+    # These features have outliers, so RobustScaler is more appropriate
+    robust_features = [
+        f for f in numeric_features
+        if f in {"participation_rate", "route_intensity", "volume_per_trip"}
+    ]
+    if robust_features:
+        transformers.append((
+            "robust_ratios",
+            RobustScaler(),
+            robust_features,
+        ))
+
+    # 4. OrdinalEncoder for infrastructure categories
+    if "infra_category" in categorical_features:
         infra_categories = [
             [
                 "no",
@@ -105,22 +124,22 @@ def build_preprocessor(
                 "bicycle_way",
             ]
         ]
+        transformers.append((
+            "infra",
+            OrdinalEncoder(
+                categories=infra_categories,
+                handle_unknown="use_encoded_value",
+                unknown_value=-1,
+            ),
+            ["infra_category"],
+        ))
 
-        categorical_transformer = OrdinalEncoder(
-            categories=infra_categories,
-            handle_unknown="use_encoded_value",
-            unknown_value=-1,
-        )
-
-        if "infra_category" in categorical_features:
-            transformers.append(("infra", categorical_transformer, ["infra_category"]))
-
-        # RegioStaR is already numeric, just pass through
-        # Supports both regiostar5 (1-5) and regiostar7 (1-7)
-        if "regiostar5" in categorical_features:
-            transformers.append(("regiostar", "passthrough", ["regiostar5"]))
-        if "regiostar7" in categorical_features:
-            transformers.append(("regiostar", "passthrough", ["regiostar7"]))
+    # 5. RegioStaR passthrough - already ordinal encoded
+    # Values are 71-77 for regiostar7, 51-55 for regiostar5
+    if "regiostar7" in categorical_features:
+        transformers.append(("regiostar", "passthrough", ["regiostar7"]))
+    elif "regiostar5" in categorical_features:
+        transformers.append(("regiostar", "passthrough", ["regiostar5"]))
 
     # Build ColumnTransformer
     preprocessor = ColumnTransformer(
@@ -128,11 +147,12 @@ def build_preprocessor(
         remainder="drop",  # Drop columns not explicitly handled
     )
 
+    # Log transformer details
+    transformer_summary = {name: cols for name, _, cols in transformers}
     log.info(
-        "Built preprocessor",
+        "Built preprocessor with feature-specific transformers",
         n_transformers=len(transformers),
-        numeric_features=len(numeric_features) if numeric_features else 0,
-        categorical_features=len(categorical_features) if categorical_features else 0,
+        transformers=transformer_summary,
     )
 
     return preprocessor
@@ -156,7 +176,11 @@ class ClippedExpm1:
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         """Apply clipped expm1 transformation."""
-        result = np.expm1(x)
+        # Clip input to prevent overflow in expm1 (max safe ~709 for float64)
+        # Use log1p(clip_max) as upper bound since expm1 is inverse of log1p
+        max_input = np.log1p(self.clip_max)
+        x_clipped = np.clip(x, None, max_input)
+        result = np.expm1(x_clipped)
         return np.clip(result, 0, self.clip_max)
 
 

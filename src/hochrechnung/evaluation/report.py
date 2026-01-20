@@ -2,9 +2,11 @@
 Training report generation.
 
 Generates HTML reports with scatterplots, metrics tables, and model comparison.
+Also provides prediction table export for model evaluation.
 """
 
 import base64
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -26,6 +28,82 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
+def save_prediction_tables(
+    model_name: str,
+    y_train: np.ndarray,
+    y_train_pred: np.ndarray,
+    y_test: np.ndarray,
+    y_test_pred: np.ndarray,
+    output_dir: Path,
+    *,
+    experiment_name: str | None = None,
+    timestamp: str | None = None,
+) -> tuple[Path, Path]:
+    """
+    Save prediction tables for train and test splits.
+
+    Creates CSV files with Actual and Predicted columns, compatible with
+    the legacy prediction format used for model evaluation.
+
+    Args:
+        model_name: Name of the model (e.g., "Random Forest").
+        y_train: Actual training target values.
+        y_train_pred: Predicted training target values.
+        y_test: Actual test target values.
+        y_test_pred: Predicted test target values.
+        output_dir: Directory to save prediction tables.
+        experiment_name: Optional experiment prefix for filenames.
+        timestamp: Optional timestamp string. If None, uses current time.
+
+    Returns:
+        Tuple of (train_predictions_path, test_predictions_path).
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if timestamp is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Sanitize model name for filename
+    safe_model_name = model_name.replace(" ", "_").lower()
+
+    # Build filename prefix
+    if experiment_name:
+        safe_experiment = experiment_name.replace(" ", "_").lower()
+        prefix = f"{safe_experiment}_{safe_model_name}"
+    else:
+        prefix = safe_model_name
+
+    # Save train predictions
+    train_df = pd.DataFrame({"Actual": y_train, "Predicted": y_train_pred})
+    train_path = output_dir / f"{prefix}_train_predictions_{timestamp}.csv"
+    train_df.to_csv(train_path, index=False)
+
+    # Save test predictions
+    test_df = pd.DataFrame({"Actual": y_test, "Predicted": y_test_pred})
+    test_path = output_dir / f"{prefix}_test_predictions_{timestamp}.csv"
+    test_df.to_csv(test_path, index=False)
+
+    log.info(
+        "Saved prediction tables",
+        model=model_name,
+        train_path=str(train_path),
+        test_path=str(test_path),
+        n_train=len(y_train),
+        n_test=len(y_test),
+    )
+
+    return train_path, test_path
+
+
+@dataclass
+class FeatureImportance:
+    """Feature importance data for a model."""
+
+    feature_names: list[str]
+    importances: np.ndarray
+    importance_type: str  # 'gini', 'permutation', 'coefficients', etc.
+
+
 @dataclass
 class ModelResult:
     """Results for a single model."""
@@ -36,6 +114,7 @@ class ModelResult:
     metrics: dict[str, float]
     training_time_s: float
     prediction_time_s: float
+    feature_importance: FeatureImportance | None = None
 
 
 @dataclass
@@ -113,6 +192,12 @@ def create_report_data(
             **trained_model.cv_scores,
         }
 
+        # Extract feature importance
+        feature_importance = extract_feature_importance(
+            trained_model.pipeline,
+            list(X_train.columns),
+        )
+
         model_results.append(
             ModelResult(
                 name=name,
@@ -121,6 +206,7 @@ def create_report_data(
                 metrics=result_metrics,
                 training_time_s=trained_model.training_time_s,
                 prediction_time_s=trained_model.cv_scores.get("prediction_time_s", 0.0),
+                feature_importance=feature_importance,
             )
         )
 
@@ -266,6 +352,192 @@ def _fig_to_base64(fig: Figure) -> str:
     return base64.b64encode(buf.read()).decode("utf-8")
 
 
+def extract_feature_importance(
+    model: Any,
+    feature_names: list[str],
+) -> FeatureImportance | None:
+    """
+    Extract feature importances from a trained model.
+
+    Handles different model types:
+    - Tree-based models (RandomForest, GradientBoosting, XGBoost): use feature_importances_
+    - Linear models (LinearRegression, Lasso, ElasticNet): use coefficients
+    - Other models: return None
+
+    Args:
+        model: Trained sklearn model or pipeline.
+        feature_names: List of feature names.
+
+    Returns:
+        FeatureImportance object or None if not available.
+    """
+    # Navigate through TransformedTargetRegressor -> Pipeline -> model
+    inner_model = model
+    preprocessor = None
+
+    if hasattr(model, "regressor"):
+        inner_model = model.regressor
+
+    if hasattr(inner_model, "named_steps"):
+        preprocessor = inner_model.named_steps.get("preprocessor")
+        inner_model = inner_model.named_steps.get("model", inner_model)
+
+    # Get transformed feature names from preprocessor if available
+    transformed_names = feature_names
+    if preprocessor is not None:
+        with contextlib.suppress(Exception):
+            transformed_names = list(preprocessor.get_feature_names_out())
+
+    # Extract importances based on model type
+    importances = None
+    importance_type = "unknown"
+
+    # Tree-based models (RandomForest, GradientBoosting, XGBoost, etc.)
+    if hasattr(inner_model, "feature_importances_"):
+        importances = inner_model.feature_importances_
+        importance_type = "gini_importance"
+
+    # Linear models (coefficients)
+    elif hasattr(inner_model, "coef_"):
+        coef = inner_model.coef_
+        if coef.ndim > 1:
+            coef = coef.flatten()
+        importances = np.abs(coef)  # Use absolute value for importance
+        importance_type = "coefficient_magnitude"
+
+    if importances is None:
+        return None
+
+    # Ensure lengths match
+    if len(importances) != len(transformed_names):
+        log.warning(
+            "Feature importance length mismatch",
+            n_importances=len(importances),
+            n_features=len(transformed_names),
+        )
+        # Try to use original feature names
+        if len(importances) == len(feature_names):
+            transformed_names = feature_names
+        else:
+            transformed_names = [f"feature_{i}" for i in range(len(importances))]
+
+    return FeatureImportance(
+        feature_names=transformed_names,
+        importances=importances,
+        importance_type=importance_type,
+    )
+
+
+def generate_feature_importance_plot(
+    feature_importance: FeatureImportance,
+    model_name: str,
+    top_n: int = 15,
+) -> str:
+    """
+    Generate horizontal bar plot of feature importances.
+
+    Args:
+        feature_importance: FeatureImportance object.
+        model_name: Name of the model.
+        top_n: Number of top features to show.
+
+    Returns:
+        Base64 encoded PNG image.
+    """
+    # Sort by importance
+    indices = np.argsort(feature_importance.importances)[::-1]
+    sorted_names = [feature_importance.feature_names[i] for i in indices]
+    sorted_importances = feature_importance.importances[indices]
+
+    # Take top N
+    n_show = min(top_n, len(sorted_names))
+    show_names = sorted_names[:n_show][::-1]  # Reverse for horizontal bar
+    show_importances = sorted_importances[:n_show][::-1]
+
+    # Normalize to percentages
+    total = sorted_importances.sum()
+    if total > 0:
+        show_importances_pct = (show_importances / total) * 100
+    else:
+        show_importances_pct = show_importances
+
+    fig, ax = plt.subplots(figsize=(10, max(6, n_show * 0.4)))
+
+    # Create horizontal bar chart
+    bars = ax.barh(
+        range(n_show), show_importances_pct, color="steelblue", edgecolor="none"
+    )
+
+    # Add value labels on bars
+    for bar, pct in zip(bars, show_importances_pct):
+        ax.text(
+            bar.get_width() + 0.5,
+            bar.get_y() + bar.get_height() / 2,
+            f"{pct:.1f}%",
+            va="center",
+            fontsize=9,
+        )
+
+    ax.set_yticks(range(n_show))
+    ax.set_yticklabels(show_names, fontsize=10)
+    ax.set_xlabel(f"Importance ({feature_importance.importance_type})", fontsize=11)
+    ax.set_title(f"{model_name}: Feature Importance", fontsize=12)
+    ax.grid(axis="x", alpha=0.3)
+
+    # Adjust x-axis to accommodate labels
+    max_val = max(show_importances_pct)
+    ax.set_xlim(0, max_val * 1.15)
+
+    plt.tight_layout()
+
+    result = _fig_to_base64(fig)
+    plt.close(fig)
+    return result
+
+
+def print_feature_importance_table(
+    feature_importance: FeatureImportance,
+    model_name: str,
+    console: Console | None = None,
+) -> None:
+    """
+    Print feature importance table to console.
+
+    Args:
+        feature_importance: FeatureImportance object.
+        model_name: Name of the model.
+        console: Rich console for output.
+    """
+    if console is None:
+        return
+
+    # Sort by importance
+    indices = np.argsort(feature_importance.importances)[::-1]
+
+    # Normalize to percentages
+    total = feature_importance.importances.sum()
+
+    table = Table(
+        title=f"{model_name} Feature Importance ({feature_importance.importance_type})"
+    )
+    table.add_column("Rank", style="dim", width=4)
+    table.add_column("Feature", style="cyan")
+    table.add_column("Importance", style="green", justify="right")
+    table.add_column("% Total", style="yellow", justify="right")
+
+    for rank, idx in enumerate(indices, 1):
+        imp = feature_importance.importances[idx]
+        pct = (imp / total * 100) if total > 0 else 0
+        table.add_row(
+            str(rank),
+            feature_importance.feature_names[idx],
+            f"{imp:.4f}",
+            f"{pct:.1f}%",
+        )
+
+    console.print(table)
+
+
 def generate_descriptive_scatterplot(
     dtv_actual: np.ndarray,
     stadtradeln_volume: np.ndarray,
@@ -404,6 +676,20 @@ def generate_html_report(
         report_data.dtv_actual, report_data.stadtradeln_volume
     )
     prediction_plots = generate_prediction_scatterplots(report_data.model_results)
+
+    # Generate feature importance plots and print to console
+    feature_importance_plots: dict[str, str] = {}
+    for result in report_data.model_results:
+        if result.feature_importance is not None:
+            # Print to console for debug output
+            print_feature_importance_table(
+                result.feature_importance, result.name, console
+            )
+
+            # Generate plot for report
+            feature_importance_plots[result.name] = generate_feature_importance_plot(
+                result.feature_importance, result.name
+            )
 
     # Build HTML
     html_content = f"""<!DOCTYPE html>
@@ -580,7 +866,31 @@ def generate_html_report(
     html_content += """
         </div>
     </div>
+"""
 
+    # Add feature importance section if we have any
+    if feature_importance_plots:
+        html_content += """
+    <div class="section">
+        <h2>Feature Importance</h2>
+        <p>Feature importance shows which variables contribute most to predictions.
+        Tree-based models use Gini importance (mean decrease in impurity),
+        while linear models show coefficient magnitudes.</p>
+        <div class="model-plots">
+"""
+        for model_name, plot_b64 in feature_importance_plots.items():
+            html_content += f"""
+            <div class="model-plot">
+                <h3>{model_name}</h3>
+                <img src="data:image/png;base64,{plot_b64}" alt="{model_name} feature importance">
+            </div>
+"""
+        html_content += """
+        </div>
+    </div>
+"""
+
+    html_content += """
     <div class="section">
         <h2>Notes</h2>
         <ul>
@@ -590,6 +900,8 @@ def generate_html_report(
             <li><strong>NMAE</strong>: Negative Mean Absolute Error in DTV units (higher/closer to 0 is better)</li>
             <li><strong>Max Error</strong>: Maximum absolute prediction error (lower is better)</li>
             <li><strong>SQV</strong>: Scalable Quality Value (Friedrich et al., 2019) - &ge;0.90 very good, &ge;0.85 good, &ge;0.80 acceptable</li>
+            <li><strong>Feature Importance (Gini)</strong>: Mean decrease in impurity when splitting on this feature (tree-based models)</li>
+            <li><strong>Feature Importance (Coefficient)</strong>: Absolute value of regression coefficient (linear models)</li>
         </ul>
     </div>
 </body>

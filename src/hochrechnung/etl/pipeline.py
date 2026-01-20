@@ -53,7 +53,7 @@ ETLMode = Literal["production", "verification"]
 
 def _get_etl_cache(config: PipelineConfig) -> CacheManager:
     """Get cache manager for ETL operations."""
-    cache_dir = config.output.cache_dir / "etl"
+    cache_dir = config.cache_dir / "etl"
     return CacheManager(cache_dir)
 
 
@@ -753,31 +753,33 @@ class ETLPipeline:
         """
         Join matched counters with traffic edge data.
 
-        Uses fid for one-to-one matching to avoid row multiplication
+        Uses edge_id for one-to-one matching to avoid row multiplication
         when multiple edges share the same base_id.
         """
         # Filter to only matched counters
-        matched = counters[counters["matched_fid"].notna()].copy()
+        matched = counters[counters["matched_edge_id"].notna()].copy()
 
-        # Convert matched_fid to same type as traffic fid
-        if "fid" in traffic.columns:
-            matched["matched_fid"] = matched["matched_fid"].astype(traffic["fid"].dtype)
+        # Convert matched_edge_id to same type as traffic edge_id
+        if "edge_id" in traffic.columns:
+            matched["matched_edge_id"] = matched["matched_edge_id"].astype(
+                traffic["edge_id"].dtype
+            )
 
-        # Merge with traffic data using fid (unique per edge)
+        # Merge with traffic data using edge_id (unique per edge)
         traffic_cols = [col for col in traffic.columns if col not in ["geometry"]]
         traffic_subset = traffic[traffic_cols].copy()
 
         joined = matched.merge(
             traffic_subset,
-            left_on="matched_fid",
-            right_on="fid",
+            left_on="matched_edge_id",
+            right_on="edge_id",
             how="left",
             suffixes=("", "_traffic"),
         )
 
-        # Drop redundant fid column (keep matched_fid)
-        if "fid" in joined.columns and "matched_fid" in joined.columns:
-            joined = joined.drop(columns=["fid"])
+        # Drop redundant edge_id column (keep matched_edge_id)
+        if "edge_id" in joined.columns and "matched_edge_id" in joined.columns:
+            joined = joined.drop(columns=["edge_id"])
 
         log.info("Joined counters with traffic", rows=len(joined))
         return joined

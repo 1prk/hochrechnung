@@ -13,96 +13,158 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RegionConfig(BaseModel):
-    """Geographic region configuration."""
+    """Geographic region configuration using ARS (Amtlicher Regionalschlüssel)."""
 
     model_config = ConfigDict(frozen=True)
 
-    code: str = Field(description="Federal state code (e.g., '06' for Hessen)")
-    name: str = Field(description="Human-readable region name")
-    bbox: tuple[float, float, float, float] = Field(
-        description="Bounding box as (min_lon, min_lat, max_lon, max_lat)"
-    )
+    ars: str = Field(description="12-digit Amtlicher Regionalschlüssel")
+    name: str | None = Field(default=None, description="Human-readable region name")
 
-    @field_validator("code")
+    @field_validator("ars")
     @classmethod
-    def validate_code(cls, v: str) -> str:
-        """Ensure code is a 2-digit string."""
-        if not v.isdigit() or len(v) != 2:
-            msg = f"Region code must be a 2-digit string, got: {v}"
+    def validate_ars(cls, v: str) -> str:
+        """Ensure ARS is a 12-digit string."""
+        if not v.isdigit() or len(v) != 12:
+            msg = f"ARS must be a 12-digit string, got: {v!r} (length {len(v)})"
             raise ValueError(msg)
         return v
 
-    @field_validator("bbox")
-    @classmethod
-    def validate_bbox(
-        cls, v: tuple[float, float, float, float]
-    ) -> tuple[float, float, float, float]:
-        """Ensure bbox is valid (min < max)."""
-        min_lon, min_lat, max_lon, max_lat = v
-        if min_lon >= max_lon:
-            msg = f"min_lon ({min_lon}) must be < max_lon ({max_lon})"
-            raise ValueError(msg)
-        if min_lat >= max_lat:
-            msg = f"min_lat ({min_lat}) must be < max_lat ({max_lat})"
-            raise ValueError(msg)
-        return v
+    @property
+    def land_code(self) -> str:
+        """Federal state code (first 2 digits of ARS)."""
+        return self.ars[:2]
+
+    @property
+    def regierungsbezirk_code(self) -> str:
+        """Regierungsbezirk code (digits 1-3 of ARS)."""
+        return self.ars[:3]
+
+    @property
+    def kreis_code(self) -> str:
+        """Kreis/county code (digits 1-5 of ARS)."""
+        return self.ars[:5]
+
+    @property
+    def gemeinde_code(self) -> str:
+        """Gemeinde/municipality code (full 12 digits)."""
+        return self.ars
 
 
 class TemporalConfig(BaseModel):
-    """Time-related configuration."""
+    """Time-related configuration with single analysis period."""
 
     model_config = ConfigDict(frozen=True)
 
     year: int = Field(ge=2018, le=2030, description="Analysis year")
-    campaign_start: date = Field(description="STADTRADELN campaign start date")
-    campaign_end: date = Field(description="STADTRADELN campaign end date")
-    counter_period_start: date = Field(description="Counter measurement period start")
-    counter_period_end: date = Field(description="Counter measurement period end")
-    holiday_start: date | None = Field(default=None, description="School holiday start")
-    holiday_end: date | None = Field(default=None, description="School holiday end")
+    period_start: date = Field(description="Analysis period start date")
+    period_end: date = Field(description="Analysis period end date")
 
-    @field_validator("campaign_end")
+    @field_validator("period_end")
     @classmethod
-    def validate_campaign_dates(cls, v: date, info: Any) -> date:
-        """Ensure campaign_end is after campaign_start."""
-        if "campaign_start" in info.data and v <= info.data["campaign_start"]:
-            msg = "campaign_end must be after campaign_start"
+    def validate_period_dates(cls, v: date, info: Any) -> date:
+        """Ensure period_end is after period_start."""
+        if "period_start" in info.data and v <= info.data["period_start"]:
+            msg = "period_end must be after period_start"
             raise ValueError(msg)
         return v
 
+    @property
+    def period_days(self) -> int:
+        """Number of days in the analysis period."""
+        return (self.period_end - self.period_start).days + 1
+
+    # Backwards compatibility aliases
+    @property
+    def campaign_start(self) -> date:
+        """Alias for period_start (backwards compatibility)."""
+        return self.period_start
+
+    @property
+    def campaign_end(self) -> date:
+        """Alias for period_end (backwards compatibility)."""
+        return self.period_end
+
 
 class DataPathsConfig(BaseModel):
-    """Data file paths configuration."""
+    """Data file paths configuration.
+
+    All paths are relative to data_root. Use resolve() to get absolute paths.
+
+    Required for all modes:
+        - traffic_volumes: STADTRADELN GPS trace volumes
+
+    Required for training only:
+        - counter_locations: Counter station locations
+        - counter_measurements: Counter measurement data
+
+    Germany-wide defaults (can be overridden):
+        - osm_pbf, municipalities, regiostar, city_centroids
+        - kommunen_stats, campaign_stats
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    data_root: Path = Field(description="Root directory for all data files")
-
-    # Counter data
-    counter_locations: Path = Field(description="Path to counter location CSV")
-    counter_measurements: Path = Field(description="Path to counter measurements CSV")
-
-    # OSM data
-    osm_pbf: Path | None = Field(
-        default=None, description="Path to OpenStreetMap PBF file (optional)"
+    data_root: Path = Field(
+        default=Path("./data"), description="Root directory for all data files"
     )
 
-    # Traffic volumes
+    # Always required
     traffic_volumes: Path = Field(description="Path to STADTRADELN traffic volumes FGB")
 
-    # Structural data
-    municipalities: Path = Field(description="Path to VG250 municipalities GPKG")
-    regiostar: Path = Field(description="Path to RegioStaR classification CSV")
-    city_centroids: Path = Field(description="Path to city centroids GPKG")
+    # Required for training, optional for prediction
+    counter_locations: Path | None = Field(
+        default=None, description="Path to counter location CSV (required for training)"
+    )
+    counter_measurements: Path | None = Field(
+        default=None,
+        description="Path to counter measurements CSV (required for training)",
+    )
 
-    # STADTRADELN participation
-    kommunen_stats: Path = Field(description="Path to kommunen statistics shapefile")
-    campaign_stats: Path = Field(description="Path to campaign statistics CSV")
+    # Germany-wide defaults (can be overridden per project)
+    # TODO: make the years from germany year-agnostic
+    osm_pbf: Path = Field(
+        default=Path("osm-data/germany-230101.osm.pbf"),
+        description="Path to OpenStreetMap PBF file",
+    )
+    municipalities: Path = Field(
+        default=Path("structural-data/DE_VG250.gpkg"),
+        description="Path to VG250 municipalities GPKG",
+    )
+    regiostar: Path = Field(
+        default=Path("structural-data/regiostar_2022.csv"),
+        description="Path to RegioStaR classification CSV",
+    )
+    city_centroids: Path = Field(
+        default=Path("structural-data/places.gpkg"),
+        description="Path to city centroids GPKG",
+    )
+    kommunen_stats: Path = Field(
+        default=Path("kommunen-stats/kommunen_stats.shp"),
+        description="Path to kommunen statistics shapefile",
+    )
+    campaign_stats: Path = Field(
+        default=Path("campaign/SR_TeilnehmendeKommunen.csv"),
+        description="Path to campaign statistics CSV",
+    )
 
     def resolve(self, path_attr: str) -> Path:
         """Resolve a relative path against data_root."""
         rel_path = getattr(self, path_attr)
+        if rel_path is None:
+            msg = f"Path '{path_attr}' is not configured"
+            raise ValueError(msg)
         return self.data_root / rel_path
+
+    def validate_for_training(self) -> None:
+        """Validate that all required paths for training are configured."""
+        missing = []
+        if self.counter_locations is None:
+            missing.append("counter_locations")
+        if self.counter_measurements is None:
+            missing.append("counter_measurements")
+        if missing:
+            msg = f"Training requires: {', '.join(missing)}"
+            raise ValueError(msg)
 
 
 class FeatureConfig(BaseModel):
@@ -164,18 +226,24 @@ class MLflowConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     tracking_uri: str = Field(default="http://127.0.0.1:5000")
-    artifact_location: Path = Field(default=Path("./mlartifacts"))
-    experiment_name: str = Field(description="MLflow experiment name")
+    # experiment_name is optional; derived from project_name if not set
+    experiment_name: str | None = Field(
+        default=None, description="MLflow experiment name (defaults to project name)"
+    )
 
 
 class OutputConfig(BaseModel):
-    """Output paths configuration."""
+    """Output paths configuration.
+
+    Paths are derived from output_root and project name.
+    Structure: ./output/{project}/predictions, ./output/{project}/plots, etc.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    plots_dir: Path = Field(default=Path("./plots"))
-    predictions_dir: Path = Field(default=Path("./predictions"))
-    cache_dir: Path = Field(default=Path("./cache"))
+    output_root: Path = Field(
+        default=Path("./output"), description="Root directory for all outputs"
+    )
 
 
 class CuratedConfig(BaseModel):
@@ -194,12 +262,17 @@ class CuratedConfig(BaseModel):
 
 
 class PipelineConfig(BaseModel):
-    """Complete pipeline configuration."""
+    """Complete pipeline configuration.
+
+    The project name drives:
+    - MLflow experiment name (if not explicitly set)
+    - Output directory structure: ./output/{project}/
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    project_name: str = Field(default="Bicycle Traffic Estimation")
-    project_version: str = Field(default="0.1.0")
+    # Project identifier - used for MLflow experiment and output paths
+    project: str = Field(description="Project identifier (e.g., 'hessen-2023')")
 
     region: RegionConfig
     temporal: TemporalConfig
@@ -218,6 +291,43 @@ class PipelineConfig(BaseModel):
         return self.temporal.year
 
     @property
+    def ars(self) -> str:
+        """Convenience accessor for the ARS."""
+        return self.region.ars
+
+    @property
+    def land_code(self) -> str:
+        """Federal state code (first 2 digits of ARS)."""
+        return self.region.land_code
+
+    # Backwards compatibility
+    @property
     def region_code(self) -> str:
-        """Convenience accessor for the region code."""
-        return self.region.code
+        """Alias for land_code (backwards compatibility)."""
+        return self.land_code
+
+    @property
+    def experiment_name(self) -> str:
+        """MLflow experiment name (derived from project if not set)."""
+        return self.mlflow.experiment_name or self.project
+
+    # Output path helpers
+    @property
+    def predictions_dir(self) -> Path:
+        """Path to predictions output directory."""
+        return self.output.output_root / self.project / "predictions"
+
+    @property
+    def plots_dir(self) -> Path:
+        """Path to plots output directory."""
+        return self.output.output_root / self.project / "plots"
+
+    @property
+    def cache_dir(self) -> Path:
+        """Path to cache directory."""
+        return self.output.output_root / self.project / "cache"
+
+    @property
+    def artifacts_dir(self) -> Path:
+        """Path to MLflow artifacts directory."""
+        return self.output.output_root / self.project / "mlartifacts"

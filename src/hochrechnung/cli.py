@@ -206,10 +206,12 @@ def train(
     Use --curated to train with pre-curated Germany-wide counter data.
     """
     import joblib
+    import numpy as np
 
     from hochrechnung.config.loader import load_config
     from hochrechnung.evaluation.experiment import Experiment, ExperimentConfig
     from hochrechnung.evaluation.metrics import compute_metrics
+    from hochrechnung.evaluation.report import save_prediction_tables
     from hochrechnung.modeling.data import (
         ModelVariant,
         auto_detect_data_path,
@@ -310,7 +312,7 @@ def train(
 
     # Set output directory
     if output is None:
-        output = pipeline_config.output.cache_dir / "models"
+        output = pipeline_config.cache_dir / "models"
     output.mkdir(parents=True, exist_ok=True)
 
     # Track all trained models across variants
@@ -430,6 +432,27 @@ def train(
         )
         variant_results[variant] = test_results
 
+        # Save prediction tables for this variant
+        predictions_dir = output / "predictions"
+        console.print(
+            f"\n[blue]Saving {variant.value} prediction tables to {predictions_dir}[/blue]"
+        )
+        for name, trained_model in trained_models.items():
+            # Get train and test predictions
+            y_train_pred = trained_model.pipeline.predict(training_data.X_train)
+            y_test_pred = trained_model.pipeline.predict(training_data.X_test)
+
+            train_path, test_path = save_prediction_tables(
+                model_name=name,
+                y_train=np.array(training_data.y_train),
+                y_train_pred=np.array(y_train_pred),
+                y_test=np.array(training_data.y_test),
+                y_test_pred=np.array(y_test_pred),
+                output_dir=predictions_dir,
+                experiment_name=f"{variant.value}_{pipeline_config.year}",
+            )
+            console.print(f"[dim]  {name}: {train_path.name}, {test_path.name}[/dim]")
+
         # Save models for this variant
         for name, trained_model in trained_models.items():
             safe_name = name.lower().replace(" ", "_")
@@ -543,6 +566,7 @@ def _train_curated_models(
     from hochrechnung.evaluation.report import (
         create_report_data,
         generate_html_report,
+        save_prediction_tables,
     )
     from hochrechnung.modeling.training import ModelTrainer
 
@@ -551,7 +575,7 @@ def _train_curated_models(
 
     # Set output directory
     if output is None:
-        output = pipeline_config.output.cache_dir / "models"
+        output = pipeline_config.cache_dir / "models"
     output.mkdir(parents=True, exist_ok=True)
 
     console.print(f"\n[blue]Training models: {', '.join(model_names)}[/blue]")
@@ -634,12 +658,48 @@ def _train_curated_models(
         "[red]>0.10[/red] high overfitting risk[/dim]"
     )
 
-    # Save models
+    # Save prediction tables
+    import numpy as np
+
+    predictions_dir = output / "predictions"
+    console.print(f"\n[blue]Saving prediction tables to {predictions_dir}[/blue]")
+    for name, trained_model in trained_models.items():
+        # Get train and test predictions
+        y_train_pred = trained_model.pipeline.predict(curated_data.X_train)
+        y_test_pred = trained_model.pipeline.predict(curated_data.X_test)
+
+        train_path, test_path = save_prediction_tables(
+            model_name=name,
+            y_train=np.array(curated_data.y_train),
+            y_train_pred=np.array(y_train_pred),
+            y_test=np.array(curated_data.y_test),
+            y_test_pred=np.array(y_test_pred),
+            output_dir=predictions_dir,
+            experiment_name=f"curated_{curated_data.year}",
+        )
+        console.print(f"[dim]  {name}: {train_path.name}, {test_path.name}[/dim]")
+
+    # Save models with feature metadata
     for name, trained_model in trained_models.items():
         safe_name = name.lower().replace(" ", "_")
         model_path = output / f"{safe_name}_curated_{curated_data.year}.joblib"
         joblib.dump(trained_model.pipeline, model_path)
         console.print(f"[green]Saved: {model_path}[/green]")
+
+        # Save feature metadata as sidecar JSON
+        import json
+
+        metadata_path = model_path.with_suffix(".meta.json")
+        metadata = {
+            "feature_names": trained_model.feature_names,
+            "model_name": name,
+            "year": curated_data.year,
+            "data_source": "curated",
+            "cv_scores": trained_model.cv_scores,
+        }
+        with metadata_path.open("w") as f:
+            json.dump(metadata, f, indent=2)
+        console.print(f"[dim]Metadata: {metadata_path}[/dim]")
 
     # MLflow logging
     if not no_mlflow:
@@ -753,13 +813,19 @@ def predict(
 
     console.print(f"[blue]Loading model: {model_uri}[/blue]")
     try:
-        model = load_model(model_uri)
+        loaded_model = load_model(model_uri)
     except FileNotFoundError as e:
         console.print(f"[red]Model not found: {e}[/red]")
         raise typer.Exit(code=1) from e
     except Exception as e:
         console.print(f"[red]Error loading model: {e}[/red]")
         raise typer.Exit(code=1) from e
+
+    # Show model metadata if available
+    if loaded_model.feature_names:
+        console.print(
+            f"[dim]Model features: {', '.join(loaded_model.feature_names)}[/dim]"
+        )
 
     console.print(
         f"[blue]Running prediction pipeline for year {pipeline_config.year}[/blue]"
@@ -769,9 +835,10 @@ def predict(
     try:
         result = run_prediction(
             pipeline_config,
-            model,
+            loaded_model.model,
             output_path=output,
             output_format=format,
+            feature_names=loaded_model.feature_names,
         )
 
         # Display results
@@ -888,7 +955,7 @@ def assess(
     # Determine ETL output path
     if etl_output is None:
         etl_output = (
-            pipeline_config.output.cache_dir
+            pipeline_config.cache_dir
             / f"training_data_{pipeline_config.year}.csv"
         )
         console.print(f"[dim]Auto-detected ETL output: {etl_output}[/dim]")
@@ -1001,7 +1068,7 @@ def verify(
             )
 
     # Step 2: Prepare verification output directory
-    verification_dir = pipeline_config.output.cache_dir / "verification" / str(year)
+    verification_dir = pipeline_config.cache_dir / "verification" / str(year)
     verification_dir.mkdir(parents=True, exist_ok=True)
 
     console.print("\n[bold]Step 2: Generating verification assets[/bold]")

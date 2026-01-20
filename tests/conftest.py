@@ -69,20 +69,16 @@ def sample_municipality_data() -> pd.DataFrame:
 def base_config() -> dict[str, Any]:
     """Create a minimal configuration dictionary for testing."""
     return {
-        "region": {
-            "code": "06",
-            "name": "Hessen",
-            "bbox": [7.77, 49.39, 10.24, 51.66],
+        "project": "hessen-2024",
+        "ars": "060000000000",
+        "region_name": "Hessen",
+        "year": 2024,
+        "period": {
+            "start": "2024-05-01",
+            "end": "2024-09-30",
         },
-        "temporal": {
-            "year": 2024,
-            "campaign_start": "2024-05-01",
-            "campaign_end": "2024-09-30",
-            "counter_period_start": "2024-05-01",
-            "counter_period_end": "2024-09-30",
-        },
-        "data_paths": {
-            "data_root": "./data",
+        "data": {
+            "root": "./data",
             "counter_locations": "counter-locations/DZS_ecovisio_2024.csv",
             "counter_measurements": "counts/DZS_counts_ecovisio_2024.csv",
             "traffic_volumes": "trafficvolumes/SR24_Hessen_VM_assessed.fgb",

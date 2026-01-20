@@ -1,0 +1,21 @@
+# Configuration for Landkreis Darmstadt-Dieburg 2023
+# Minimal prediction-only config (no counter data needed)
+
+# Project identifier (drives MLflow experiment + output paths)
+project: ld-2023
+
+# 12-digit ARS for Landkreis Darmstadt-Dieburg
+ars: "033540000000"
+region_name: "Lüchow-Dannenberg"
+
+# Analysis year
+year: 2023
+
+# Analysis period
+period:
+  start: "2023-05-01"
+  end: "2023-09-30"
+
+# Data paths - only traffic_volumes required for prediction
+data:
+  traffic_volumes: "trafficvolumes/SR23_Lüchow-Dannenberg_VM.gpkg"

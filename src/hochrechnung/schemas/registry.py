@@ -18,7 +18,11 @@ from hochrechnung.schemas.structural import (
     MunicipalitySchema,
     RegioStarSchema,
 )
-from hochrechnung.schemas.traffic import TrafficVolumeRawSchema, TrafficVolumeSchema
+from hochrechnung.schemas.traffic import (
+    TrafficVolumeGermanSchema,
+    TrafficVolumeRawSchema,
+    TrafficVolumeSchema,
+)
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -87,9 +91,16 @@ class SchemaRegistry:
         "traffic_volume": SchemaInfo(
             name="traffic_volume",
             schema=TrafficVolumeSchema,
-            version="1.0.0",
+            version="1.1.0",
             role=DataRole.FEATURE,
-            description="Bicycle traffic volumes per OSM edge (validated)",
+            description="Bicycle traffic volumes per OSM edge (English column names)",
+        ),
+        "traffic_volume_german": SchemaInfo(
+            name="traffic_volume_german",
+            schema=TrafficVolumeGermanSchema,
+            version="1.0.0",
+            role=DataRole.SOURCE,
+            description="Bicycle traffic volumes (German STADTRADELN column names)",
         ),
         "traffic_volume_raw": SchemaInfo(
             name="traffic_volume_raw",

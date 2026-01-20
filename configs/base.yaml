@@ -1,16 +1,39 @@
 # Base configuration for hochrechnung pipeline
-# This file contains default values that can be overridden by region/year-specific configs
+# Contains Germany-wide defaults that can be overridden by project configs
+#
+# Project configs only need to specify:
+#   - project: identifier (drives MLflow experiment + output paths)
+#   - ars: 12-digit Amtlicher Regionalschlüssel
+#   - year: analysis year
+#   - period.start/end: analysis period
+#   - data.traffic_volumes: path to SR traffic volumes FGB
 
-project:
-  name: "Bicycle Traffic Estimation"
-  version: "0.1.0"
-  description: "ML models for predicting daily bicycle traffic volumes at OSM edges"
+# Germany-wide structural data defaults
+# These are used unless overridden in project config
+data:
+  root: "./data"
+
+  # OSM data (Germany-wide)
+  osm_pbf: "osm-data/germany-230101.osm.pbf"
+
+  # Structural data (Germany-wide)
+  municipalities: "structural-data/DE_VG250.gpkg"
+  regiostar: "structural-data/regiostar_2022.csv"
+  city_centroids: "structural-data/places.gpkg"
+
+  # STADTRADELN participation data (Germany-wide)
+  kommunen_stats: "kommunen-stats/kommunen_stats.shp"
+  campaign_stats: "campaign/SR_TeilnehmendeKommunen.csv"
+
+# Output configuration
+# Paths are derived from project name: ./output/{project}/predictions, etc.
+output:
+  root: "./output"
 
 # MLflow configuration
 mlflow:
   tracking_uri: "${MLFLOW_TRACKING_URI:http://127.0.0.1:5000}"
-  artifact_location: "./mlartifacts"
-  experiment_name: "default"
+  # experiment_name defaults to project name if not specified
 
 # Training parameters
 training:
@@ -19,13 +42,6 @@ training:
   random_state: 1337
   min_dtv: 25
   max_dtv: null  # No upper limit by default
-
-  # Loss metrics to track
-  metrics:
-    - r2
-    - rmse
-    - mae
-    - mape
 
 # Preprocessing configuration
 preprocessing:
@@ -131,19 +147,8 @@ models:
       learning_rate: [0.01, 0.1, 0.2]
       max_depth: [3, 5, 7]
 
-# Output configuration
-output:
-  plots_dir: "./plots"
-  predictions_dir: "./predictions"
-  cache_dir: "./cache"
-
 # Curated Germany-wide data configuration
 # Use with: uv run hochrechnung train --curated --year <year>
 curated:
   path: "counts/2024-03-21_DZS_SR_ARS_Datengrundlage_ManuellErgaenzt.csv"
   city_centroids: "structural-data/places.gpkg"
-
-# Logging configuration
-logging:
-  level: "INFO"
-  json_output: false

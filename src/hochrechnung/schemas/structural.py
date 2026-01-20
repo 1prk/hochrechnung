@@ -2,8 +2,6 @@
 Pandera schemas for structural/administrative data.
 """
 
-from typing import Optional
-
 import pandera as pa
 from pandera.typing import Series
 

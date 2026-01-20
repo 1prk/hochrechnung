@@ -362,7 +362,7 @@ def auto_detect_data_path(config: PipelineConfig) -> Path:
     Raises:
         FileNotFoundError: If no data file is found.
     """
-    cache_dir = config.output.cache_dir
+    cache_dir = config.cache_dir
     expected_path = cache_dir / f"training_data_{config.year}.csv"
 
     if expected_path.exists():

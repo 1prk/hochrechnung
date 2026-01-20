@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 import pytest
+import yaml
 
 from hochrechnung.config import PipelineConfig, load_config
 from hochrechnung.validation import ValidationResult, ValidationRunner
@@ -19,24 +20,37 @@ def temp_data_dir() -> Path:
         yield Path(tmpdir)
 
 
+def _create_config_from_dict(config_dict: dict[str, Any]) -> PipelineConfig:
+    """Create a PipelineConfig from a YAML-format dict by writing to temp file."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+    ) as f:
+        yaml.dump(config_dict, f)
+        temp_path = Path(f.name)
+    try:
+        return load_config(temp_path)
+    finally:
+        temp_path.unlink()
+
+
 @pytest.fixture
 def minimal_config_dict(temp_data_dir: Path) -> dict[str, Any]:
-    """Create minimal config dictionary for testing."""
+    """Create minimal config dictionary for testing.
+
+    Note: This returns a dict in the YAML config format, not the PipelineConfig format.
+    Use load_config() or construct PipelineConfig manually with proper field names.
+    """
     return {
-        "region": {
-            "code": "06",
-            "name": "Hessen",
-            "bbox": [7.77, 49.39, 10.24, 51.66],
+        "project": "test-validation",
+        "ars": "060000000000",
+        "region_name": "Hessen",
+        "year": 2024,
+        "period": {
+            "start": "2024-05-01",
+            "end": "2024-09-30",
         },
-        "temporal": {
-            "year": 2024,
-            "campaign_start": "2024-05-01",
-            "campaign_end": "2024-09-30",
-            "counter_period_start": "2024-05-01",
-            "counter_period_end": "2024-09-30",
-        },
-        "data_paths": {
-            "data_root": str(temp_data_dir),
+        "data": {
+            "root": str(temp_data_dir),
             "counter_locations": "counter_locations.csv",
             "counter_measurements": "counter_measurements.csv",
             "traffic_volumes": "traffic_volumes.csv",
@@ -58,10 +72,6 @@ def minimal_config_dict(temp_data_dir: Path) -> dict[str, Any]:
         "models": {
             "enabled": [],
         },
-        "mlflow": {
-            "experiment_name": "test",
-        },
-        "output": {},
     }
 
 
@@ -141,19 +151,17 @@ class TestDatasetSchemaMapping:
 class TestValidationRunner:
     """Tests for ValidationRunner."""
 
-    def test_runner_initialization(
-        self, minimal_config_dict: dict[str, Any], temp_data_dir: Path
-    ) -> None:
+    def test_runner_initialization(self, minimal_config_dict: dict[str, Any]) -> None:
         """Test that runner initializes correctly."""
-        config = PipelineConfig(**minimal_config_dict)
+        config = _create_config_from_dict(minimal_config_dict)
         runner = ValidationRunner(config)
         assert runner.config == config
 
     def test_validation_missing_files(
-        self, minimal_config_dict: dict[str, Any], temp_data_dir: Path
+        self, minimal_config_dict: dict[str, Any]
     ) -> None:
         """Test validation reports missing files correctly."""
-        config = PipelineConfig(**minimal_config_dict)
+        config = _create_config_from_dict(minimal_config_dict)
         runner = ValidationRunner(config)
         results = runner.run()
 
@@ -175,10 +183,10 @@ class TestValidationRunner:
         counter_locations_path = temp_data_dir / "counter_locations.csv"
         # Ensure ars is written as string to preserve leading zeros
         df = valid_counter_locations_df.copy()
-        df['ars'] = df['ars'].astype(str)
+        df["ars"] = df["ars"].astype(str)
         df.to_csv(counter_locations_path, index=False)
 
-        config = PipelineConfig(**minimal_config_dict)
+        config = _create_config_from_dict(minimal_config_dict)
         runner = ValidationRunner(config)
         results = runner.run()
 
@@ -202,7 +210,7 @@ class TestValidationRunner:
         counter_locations_path = temp_data_dir / "counter_locations.csv"
         invalid_counter_locations_df.to_csv(counter_locations_path, index=False)
 
-        config = PipelineConfig(**minimal_config_dict)
+        config = _create_config_from_dict(minimal_config_dict)
         runner = ValidationRunner(config)
         results = runner.run()
 
@@ -214,8 +222,10 @@ class TestValidationRunner:
         assert counter_result.schema_valid is False
         assert counter_result.error_message is not None
         # Check for schema-related error message
-        assert ("column" in counter_result.error_message.lower() or
-                "error" in counter_result.error_message.lower())
+        assert (
+            "column" in counter_result.error_message.lower()
+            or "error" in counter_result.error_message.lower()
+        )
 
     def test_validation_dataset_without_schema(
         self, minimal_config_dict: dict[str, Any], temp_data_dir: Path
@@ -225,7 +235,7 @@ class TestValidationRunner:
         kommunen_path = temp_data_dir / "kommunen_stats.csv"
         pd.DataFrame({"dummy": [1, 2, 3]}).to_csv(kommunen_path, index=False)
 
-        config = PipelineConfig(**minimal_config_dict)
+        config = _create_config_from_dict(minimal_config_dict)
         runner = ValidationRunner(config)
         results = runner.run()
 
@@ -245,18 +255,18 @@ class TestValidationRunner:
         """Test validation handles multiple files correctly."""
         # Create multiple valid files, ensuring ars columns preserve leading zeros
         df_locations = valid_counter_locations_df.copy()
-        df_locations['ars'] = df_locations['ars'].astype(str)
+        df_locations["ars"] = df_locations["ars"].astype(str)
         (temp_data_dir / "counter_locations.csv").write_text(
             df_locations.to_csv(index=False), encoding="utf-8"
         )
 
         df_regiostar = valid_regiostar_df.copy()
-        df_regiostar['ars'] = df_regiostar['ars'].astype(str)
+        df_regiostar["ars"] = df_regiostar["ars"].astype(str)
         (temp_data_dir / "regiostar.csv").write_text(
             df_regiostar.to_csv(index=False), encoding="utf-8"
         )
 
-        config = PipelineConfig(**minimal_config_dict)
+        config = _create_config_from_dict(minimal_config_dict)
         runner = ValidationRunner(config)
         results = runner.run()
 

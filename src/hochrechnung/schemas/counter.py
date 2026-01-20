@@ -4,8 +4,6 @@ Pandera schemas for counter (DZS) data.
 DZS = Dauerzählstelle (permanent counting station)
 """
 
-from typing import Optional
-
 import pandera.pandas as pa
 from pandera.typing import Series
 
@@ -35,7 +33,7 @@ class CounterLocationSchema(pa.DataFrameModel):
         le=180.0,
         description="Station longitude in WGS84",
     )
-    ars: Optional[Series[str]] = pa.Field(
+    ars: Series[str] | None = pa.Field(
         description="Amtlicher Regionalschlüssel (12-digit municipality code)",
         str_length={"min_value": 12, "max_value": 12},
         nullable=True,

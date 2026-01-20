@@ -131,7 +131,7 @@ class AssessmentRunner:
         """
         self.config = config
         self.etl_path = etl_output_path or (
-            config.output.cache_dir / f"training_data_{config.year}.csv"
+            config.cache_dir / f"training_data_{config.year}.csv"
         )
 
     def run(self) -> AssessmentResult:

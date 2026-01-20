@@ -28,17 +28,54 @@ log = get_logger(__name__)
 # Default chunk size for large file loading (rows per chunk)
 DEFAULT_CHUNK_SIZE = 50_000
 
-# Columns required for ETL pipeline - load only these to reduce memory
-# count_forward/count_backward are directional counts for verification UI
-REQUIRED_COLUMNS = [
-    "base_id",
+# =============================================================================
+# Column name sets - supports both German and English naming
+# =============================================================================
+# German (STADTRADELN delivery) or English (internal) column names.
+# The loader auto-detects which format is used.
+
+# German column names (STADTRADELN delivery format)
+COLUMNS_GERMAN = [
+    "KantenId",  # edge_id
+    "GrundlagenId",  # base_id
+    "Verkehrsmenge",  # count
+    "VerkehrsmengeIn",  # count_forward
+    "VerkehrsmengeGegen",  # count_backward
+    "GeschwIn",  # speed_forward_kmh
+    "GeschwGegen",  # speed_backward_kmh
+    "geometry",
+]
+
+# English column names (short internal names)
+COLUMNS_ENGLISH = [
     "edge_id",
+    "base_id",
     "count",
     "count_forward",
     "count_backward",
+    "speed_forward_kmh",
+    "speed_backward_kmh",
     "bicycle_infrastructure",
     "geometry",
 ]
+
+# Required columns for ETL pipeline (either naming convention)
+REQUIRED_COLUMNS_GERMAN = ["KantenId", "GrundlagenId", "Verkehrsmenge"]
+REQUIRED_COLUMNS_ENGLISH = ["edge_id", "base_id", "count"]
+
+# German -> English column mapping for automatic renaming
+GERMAN_TO_ENGLISH: dict[str, str] = {
+    "KantenId": "edge_id",
+    "GrundlagenId": "base_id",
+    "Verkehrsmenge": "count",
+    "VerkehrsmengeIn": "count_forward",
+    "VerkehrsmengeGegen": "count_backward",
+    "GeschwIn": "speed_forward_kmh",
+    "GeschwGegen": "speed_backward_kmh",
+}
+
+# Legacy column names (for backwards compatibility)
+REQUIRED_COLUMNS = COLUMNS_ENGLISH  # Default to English
 
 
 class TrafficVolumeLoader(GeoDataLoader[TrafficVolumeRawSchema]):
@@ -77,6 +114,9 @@ class TrafficVolumeLoader(GeoDataLoader[TrafficVolumeRawSchema]):
         """
         Load traffic volumes from FlatGeoBuf.
 
+        Supports both German (STADTRADELN delivery) and English column names.
+        Auto-detects which format is used based on file contents.
+
         Note: Files are pre-filtered by region (e.g., SR23_Hessen_VM.fgb only contains
         Hessen data). No bbox filtering needed during load.
 
@@ -93,27 +133,47 @@ class TrafficVolumeLoader(GeoDataLoader[TrafficVolumeRawSchema]):
             msg = f"Traffic volumes file not found: {path}"
             raise FileNotFoundError(msg)
 
-        # Determine columns to load
+        # Detect column format and determine columns to load
         columns_to_load = self.columns
+        column_format = "unknown"
+
         if columns_to_load is None:
-            # Get available columns from file metadata
             try:
                 file_info = pyogrio.read_info(path)
                 available_cols = file_info.get("fields", [])
-                # Filter to required columns that exist in file
-                columns_to_load = [
-                    c
-                    for c in REQUIRED_COLUMNS
-                    if c in available_cols or c == "geometry"
-                ]
-                if not columns_to_load:
-                    columns_to_load = None  # Fall back to loading all columns
+
+                # Detect format: German or English
+                # German: check for KantenId and Verkehrsmenge
+                if (
+                    "KantenId" in available_cols and "Verkehrsmenge" in available_cols
+                ):
+                    column_format = "german"
+                    columns_to_load = [
+                        c
+                        for c in COLUMNS_GERMAN
+                        if c in available_cols or c == "geometry"
+                    ]
+                elif "edge_id" in available_cols and "count" in available_cols:
+                    column_format = "english"
+                    columns_to_load = [
+                        c
+                        for c in COLUMNS_ENGLISH
+                        if c in available_cols or c == "geometry"
+                    ]
+                else:
+                    # Fall back to loading all columns
+                    columns_to_load = None
+                    log.warning(
+                        "Could not detect column format",
+                        available=available_cols[:10],
+                    )
             except Exception:
                 columns_to_load = None
 
         log.info(
             "Loading traffic volumes",
             path=str(path),
+            format=column_format,
             chunked=self.chunk_size is not None,
             columns=columns_to_load,
         )
@@ -131,13 +191,38 @@ class TrafficVolumeLoader(GeoDataLoader[TrafficVolumeRawSchema]):
                     read_kwargs["columns"] = non_geom_cols
             gdf = gpd.read_file(path, engine="pyogrio", **read_kwargs)
 
-        log.info("Loaded traffic data", rows=len(gdf))
+        log.info("Loaded traffic data", rows=len(gdf), columns=list(gdf.columns))
 
-        # Validate expected columns
-        expected_cols = ["base_id", "edge_id", "count", "bicycle_infrastructure"]
-        missing = [col for col in expected_cols if col not in gdf.columns]
+        # Rename German columns to English for internal processing
+        if column_format == "german":
+            rename_map = {k: v for k, v in GERMAN_TO_ENGLISH.items() if k in gdf.columns}
+            if rename_map:
+                gdf = gdf.rename(columns=rename_map)
+                log.info(
+                    "Renamed German columns to English",
+                    renamed=list(rename_map.keys()),
+                )
+                # Update format after renaming
+                column_format = "english"
+
+        # Validate required columns based on detected format
+        if column_format == "german":
+            missing = [c for c in REQUIRED_COLUMNS_GERMAN if c not in gdf.columns]
+        elif column_format == "english":
+            missing = [c for c in REQUIRED_COLUMNS_ENGLISH if c not in gdf.columns]
+        else:
+            # Check for either format
+            has_german = all(c in gdf.columns for c in REQUIRED_COLUMNS_GERMAN)
+            has_english = all(c in gdf.columns for c in REQUIRED_COLUMNS_ENGLISH)
+            if not has_german and not has_english:
+                missing = REQUIRED_COLUMNS_GERMAN  # Report German as expected
+            else:
+                missing = []
+
         if missing:
-            log.warning("Missing expected columns", missing=missing)
+            log.warning(
+                "Missing required columns", missing=missing, format=column_format
+            )
 
         return gdf
 

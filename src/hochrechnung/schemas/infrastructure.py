@@ -2,8 +2,6 @@
 Pandera schemas for OSM infrastructure data.
 """
 
-from typing import Optional
-
 import pandera.pandas as pa
 from pandera.typing import Series
 
@@ -18,23 +16,23 @@ class OSMInfrastructureSchema(pa.DataFrameModel):
     way_id: Series[int] = pa.Field(
         description="OSM way identifier",
     )
-    highway: Optional[Series[str]] = pa.Field(
+    highway: Series[str] | None = pa.Field(
         nullable=True,
         description="OSM highway tag value",
     )
-    cycleway: Optional[Series[str]] = pa.Field(
+    cycleway: Series[str] | None = pa.Field(
         nullable=True,
         description="OSM cycleway tag value",
     )
-    cycleway_left: Optional[Series[str]] = pa.Field(
+    cycleway_left: Series[str] | None = pa.Field(
         nullable=True,
         description="OSM cycleway:left tag value",
     )
-    cycleway_right: Optional[Series[str]] = pa.Field(
+    cycleway_right: Series[str] | None = pa.Field(
         nullable=True,
         description="OSM cycleway:right tag value",
     )
-    bicycle: Optional[Series[str]] = pa.Field(
+    bicycle: Series[str] | None = pa.Field(
         nullable=True,
         description="OSM bicycle tag value",
     )

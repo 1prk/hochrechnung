@@ -2,6 +2,7 @@
 Configuration loading utilities.
 
 Supports environment variable interpolation and config inheritance.
+Minimal configs only need: project, ars, year, period, data.traffic_volumes
 """
 
 import os
@@ -89,6 +90,13 @@ def load_config(
     """
     Load pipeline configuration from YAML file(s).
 
+    Minimal config requires only:
+        - project: str
+        - ars: str (12-digit)
+        - year: int
+        - period.start, period.end: date strings
+        - data.traffic_volumes: path
+
     Args:
         config_path: Path to the main configuration file.
         base_path: Optional path to base configuration for inheritance.
@@ -110,59 +118,76 @@ def load_config(
     # Merge configs (main overrides base)
     merged = _deep_merge(base_data, main_data)
 
-    # Build configuration objects
-    region_data = merged.get("region", {})
+    # Extract project name (required)
+    project = merged.get("project")
+    if not project:
+        msg = "Config must specify 'project' name"
+        raise ValueError(msg)
+
+    # Build region config from ARS
+    ars = merged.get("ars")
+    if not ars:
+        msg = "Config must specify 'ars' (12-digit Amtlicher Regionalschlüssel)"
+        raise ValueError(msg)
     region = RegionConfig(
-        code=region_data.get("code", "06"),
-        name=region_data.get("name", "Unknown"),
-        bbox=tuple(region_data.get("bbox", [0, 0, 1, 1])),
+        ars=str(ars),
+        name=merged.get("region_name"),
     )
 
-    temporal_data = merged.get("temporal", {})
+    # Build temporal config
+    year = merged.get("year")
+    if not year:
+        msg = "Config must specify 'year'"
+        raise ValueError(msg)
+
+    period_data = merged.get("period", {})
     temporal = TemporalConfig(
-        year=temporal_data.get("year", 2024),
-        campaign_start=_parse_date(temporal_data.get("campaign_start", "2024-05-01")),
-        campaign_end=_parse_date(temporal_data.get("campaign_end", "2024-09-30")),
-        counter_period_start=_parse_date(
-            temporal_data.get("counter_period_start", "2024-05-01")
-        ),
-        counter_period_end=_parse_date(
-            temporal_data.get("counter_period_end", "2024-09-30")
-        ),
-        holiday_start=_parse_date(temporal_data["holiday_start"])
-        if temporal_data.get("holiday_start")
-        else None,
-        holiday_end=_parse_date(temporal_data["holiday_end"])
-        if temporal_data.get("holiday_end")
-        else None,
+        year=year,
+        period_start=_parse_date(period_data.get("start", f"{year}-05-01")),
+        period_end=_parse_date(period_data.get("end", f"{year}-09-30")),
     )
 
-    paths_data = merged.get("data_paths", {})
+    # Build data paths config
+    data_data = merged.get("data", {})
+    traffic_volumes = data_data.get("traffic_volumes")
+    if not traffic_volumes:
+        msg = "Config must specify 'data.traffic_volumes'"
+        raise ValueError(msg)
+
     data_paths = DataPathsConfig(
-        data_root=Path(paths_data.get("data_root", "./data")),
-        counter_locations=Path(
-            paths_data.get("counter_locations", "counter-locations/default.csv")
-        ),
-        counter_measurements=Path(
-            paths_data.get("counter_measurements", "counts/default.csv")
-        ),
-        osm_pbf=Path(paths_data["osm_pbf"]) if paths_data.get("osm_pbf") else None,
-        traffic_volumes=Path(
-            paths_data.get("traffic_volumes", "trafficvolumes/default.fgb")
-        ),
-        municipalities=Path(
-            paths_data.get("municipalities", "structural-data/DE_VG250.gpkg")
-        ),
-        regiostar=Path(paths_data.get("regiostar", "structural-data/regiostar.csv")),
-        city_centroids=Path(
-            paths_data.get("city_centroids", "structural-data/centroids.gpkg")
-        ),
-        kommunen_stats=Path(
-            paths_data.get("kommunen_stats", "kommunen-stats/default.shp")
-        ),
-        campaign_stats=Path(paths_data.get("campaign_stats", "campaign/default.csv")),
+        data_root=Path(data_data.get("root", "./data")),
+        traffic_volumes=Path(traffic_volumes),
+        # Optional: counter data (required for training)
+        counter_locations=Path(data_data["counter_locations"])
+        if data_data.get("counter_locations")
+        else None,
+        counter_measurements=Path(data_data["counter_measurements"])
+        if data_data.get("counter_measurements")
+        else None,
+        # Optional overrides for Germany-wide defaults
+        # TODO: make that file year-agnostic
+        # (we must parse the germany-{YY}0101.osm.pbf somehow)
+        osm_pbf=Path(data_data["osm_pbf"])
+        if data_data.get("osm_pbf")
+        else Path("osm-data/germany-230101.osm.pbf"),
+        municipalities=Path(data_data["municipalities"])
+        if data_data.get("municipalities")
+        else Path("structural-data/DE_VG250.gpkg"),
+        regiostar=Path(data_data["regiostar"])
+        if data_data.get("regiostar")
+        else Path("structural-data/regiostar_2022.csv"),
+        city_centroids=Path(data_data["city_centroids"])
+        if data_data.get("city_centroids")
+        else Path("structural-data/places.gpkg"),
+        kommunen_stats=Path(data_data["kommunen_stats"])
+        if data_data.get("kommunen_stats")
+        else Path("kommunen-stats/kommunen_stats.shp"),
+        campaign_stats=Path(data_data["campaign_stats"])
+        if data_data.get("campaign_stats")
+        else Path("campaign/SR_TeilnehmendeKommunen.csv"),
     )
 
+    # Features config (from base.yaml defaults)
     features_data = merged.get("features", {})
     features = FeatureConfig(
         raw_columns=features_data.get("raw_columns", []),
@@ -170,6 +195,7 @@ def load_config(
         model_features=features_data.get("model_features", []),
     )
 
+    # Preprocessing config (from base.yaml defaults)
     preprocessing_data = merged.get("preprocessing", {})
     preprocessing = PreprocessingConfig(
         infrastructure_mapping=preprocessing_data.get("infrastructure_mapping", {}),
@@ -182,36 +208,38 @@ def load_config(
         ),
     )
 
+    # Training config (can be overridden)
     training_data = merged.get("training", {})
     training = TrainingConfig(
         test_size=training_data.get("test_size", 0.2),
-        cv_folds=training_data.get("cv_folds", 5),
+        cv_folds=training_data.get("cv_folds", 10),
         random_state=training_data.get("random_state", 1337),
         min_dtv=training_data.get("min_dtv", 25),
         max_dtv=training_data.get("max_dtv"),
         metrics=training_data.get("metrics", ["r2", "rmse", "mae", "mape"]),
     )
 
+    # Models config (from base.yaml defaults)
     models_data = merged.get("models", {})
     models = ModelConfig(
         enabled=models_data.get("enabled", []),
         hyperparameters=models_data.get("hyperparameters", {}),
     )
 
+    # MLflow config (experiment_name derived from project if not set)
     mlflow_data = merged.get("mlflow", {})
     mlflow = MLflowConfig(
         tracking_uri=mlflow_data.get("tracking_uri", "http://127.0.0.1:5000"),
-        artifact_location=Path(mlflow_data.get("artifact_location", "./mlartifacts")),
-        experiment_name=mlflow_data.get("experiment_name", "default"),
+        experiment_name=mlflow_data.get("experiment_name"),  # None = use project
     )
 
+    # Output config (paths derived from project name)
     output_data = merged.get("output", {})
     output = OutputConfig(
-        plots_dir=Path(output_data.get("plots_dir", "./plots")),
-        predictions_dir=Path(output_data.get("predictions_dir", "./predictions")),
-        cache_dir=Path(output_data.get("cache_dir", "./cache")),
+        output_root=Path(output_data.get("root", "./output")),
     )
 
+    # Curated config (optional)
     curated_data = merged.get("curated", {})
     curated = CuratedConfig(
         path=Path(curated_data["path"]) if curated_data.get("path") else None,
@@ -220,11 +248,8 @@ def load_config(
         else None,
     )
 
-    project_data = merged.get("project", {})
-
     return PipelineConfig(
-        project_name=project_data.get("name", "Bicycle Traffic Estimation"),
-        project_version=project_data.get("version", "0.1.0"),
+        project=project,
         region=region,
         temporal=temporal,
         data_paths=data_paths,

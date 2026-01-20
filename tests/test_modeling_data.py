@@ -63,30 +63,21 @@ def test_config() -> PipelineConfig:
     from datetime import date
 
     return PipelineConfig(
-        project_name="Test",
-        project_version="0.1.0",
+        project="test-modeling",
         region=RegionConfig(
-            code="06",
+            ars="060000000000",
             name="Hessen",
-            bbox=(7.77, 49.39, 10.24, 51.66),
         ),
         temporal=TemporalConfig(
             year=2023,
-            campaign_start=date(2023, 5, 1),
-            campaign_end=date(2023, 9, 30),
-            counter_period_start=date(2023, 5, 1),
-            counter_period_end=date(2023, 9, 30),
+            period_start=date(2023, 5, 1),
+            period_end=date(2023, 9, 30),
         ),
         data_paths=DataPathsConfig(
             data_root=Path("./data"),
+            traffic_volumes=Path("trafficvolumes/test.fgb"),
             counter_locations=Path("counter-locations/test.csv"),
             counter_measurements=Path("counts/test.csv"),
-            traffic_volumes=Path("trafficvolumes/test.fgb"),
-            municipalities=Path("structural-data/DE_VG250.gpkg"),
-            regiostar=Path("structural-data/regiostar.csv"),
-            city_centroids=Path("structural-data/centroids.gpkg"),
-            kommunen_stats=Path("kommunen-stats/test.shp"),
-            campaign_stats=Path("campaign/test.csv"),
         ),
         features=FeatureConfig(
             raw_columns=["count", "population"],
@@ -112,14 +103,8 @@ def test_config() -> PipelineConfig:
         ),
         mlflow=MLflowConfig(
             tracking_uri="http://localhost:5000",
-            artifact_location=Path("./mlartifacts"),
-            experiment_name="test",
         ),
-        output=OutputConfig(
-            plots_dir=Path("./plots"),
-            predictions_dir=Path("./predictions"),
-            cache_dir=Path("./cache"),
-        ),
+        output=OutputConfig(),
     )
 
 
@@ -220,26 +205,15 @@ class TestFilterByDtv:
         from datetime import date
 
         config = PipelineConfig(
-            project_name="Test",
-            project_version="0.1.0",
-            region=RegionConfig(code="06", name="Test", bbox=(0, 0, 1, 1)),
+            project="test-max-dtv",
+            region=RegionConfig(ars="060000000000", name="Test"),
             temporal=TemporalConfig(
                 year=2023,
-                campaign_start=date(2023, 1, 1),
-                campaign_end=date(2023, 12, 31),
-                counter_period_start=date(2023, 1, 1),
-                counter_period_end=date(2023, 12, 31),
+                period_start=date(2023, 1, 1),
+                period_end=date(2023, 12, 31),
             ),
             data_paths=DataPathsConfig(
-                data_root=Path(),
-                counter_locations=Path("test.csv"),
-                counter_measurements=Path("test.csv"),
                 traffic_volumes=Path("test.fgb"),
-                municipalities=Path("test.gpkg"),
-                regiostar=Path("test.csv"),
-                city_centroids=Path("test.gpkg"),
-                kommunen_stats=Path("test.shp"),
-                campaign_stats=Path("test.csv"),
             ),
             features=FeatureConfig(raw_columns=[], derived={}, model_features=[]),
             preprocessing=PreprocessingConfig(
@@ -248,16 +222,8 @@ class TestFilterByDtv:
             ),
             training=TrainingConfig(min_dtv=0, max_dtv=100),
             models=ModelConfig(enabled=[], hyperparameters={}),
-            mlflow=MLflowConfig(
-                tracking_uri="http://localhost:5000",
-                artifact_location=Path(),
-                experiment_name="test",
-            ),
-            output=OutputConfig(
-                plots_dir=Path(),
-                predictions_dir=Path(),
-                cache_dir=Path(),
-            ),
+            mlflow=MLflowConfig(tracking_uri="http://localhost:5000"),
+            output=OutputConfig(),
         )
 
         df = pd.DataFrame({"dtv": [30, 50, 150, 80]})
@@ -387,29 +353,35 @@ class TestAutoDetectDataPath:
         self, test_config: PipelineConfig, tmp_path: Path
     ) -> None:
         """Should find training_data_{year}.csv in cache dir."""
+        from unittest.mock import MagicMock
+
         # Create cache dir and file
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         expected_file = cache_dir / "training_data_2023.csv"
         expected_file.write_text("test")
 
-        # Update config to use temp cache dir
-        config = test_config.model_copy()
-        object.__setattr__(config.output, "cache_dir", cache_dir)
+        # Create mock config with cache_dir property
+        mock_config = MagicMock()
+        mock_config.year = 2023
+        mock_config.cache_dir = cache_dir
 
-        result = auto_detect_data_path(config)
+        result = auto_detect_data_path(mock_config)
         assert result == expected_file
 
     def test_raises_when_not_found(
         self, test_config: PipelineConfig, tmp_path: Path
     ) -> None:
         """Should raise FileNotFoundError when no data file exists."""
+        from unittest.mock import MagicMock
+
         # Create empty cache dir
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
 
-        config = test_config.model_copy()
-        object.__setattr__(config.output, "cache_dir", cache_dir)
+        mock_config = MagicMock()
+        mock_config.year = 2023
+        mock_config.cache_dir = cache_dir
 
         with pytest.raises(FileNotFoundError, match="No training data found"):
-            auto_detect_data_path(config)
+            auto_detect_data_path(mock_config)

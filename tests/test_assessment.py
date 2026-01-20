@@ -226,7 +226,7 @@ class TestAssessmentRunner:
 
         mock_config = MagicMock()
         mock_config.year = 2024
-        mock_config.output.cache_dir = Path("/tmp")
+        mock_config.cache_dir = Path("/tmp")
 
         # Bypass __init__ validation
         runner = object.__new__(AssessmentRunner)

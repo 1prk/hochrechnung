@@ -1,58 +1,34 @@
 # Configuration for Hessen 2022 bicycle traffic estimation
-# Extends base.yaml with region/year-specific settings
+# Extends base.yaml with project-specific settings
 
-# Region configuration
-region:
-  code: "06"  # Federal state code for Hessen
-  name: "Hessen"
-  bbox:
-    - 7.77   # min longitude
-    - 49.39  # min latitude
-    - 10.24  # max longitude
-    - 51.66  # max latitude
+# Project identifier (drives MLflow experiment + output paths)
+project: hessen-2022
 
-# Temporal configuration
-temporal:
-  year: 2022
-  # STADTRADELN campaign period
-  campaign_start: "2022-05-01"
-  campaign_end: "2022-09-30"
-  # Counter measurement period
-  counter_period_start: "2022-05-01"
-  counter_period_end: "2022-09-30"
-  # School holidays (for feature engineering)
-  holiday_start: "2022-07-25"
-  holiday_end: "2022-09-02"
+# 12-digit ARS for Hessen (state-level, padded with zeros)
+ars: "060000000000"
+region_name: "Hessen"
 
-# Data paths (relative to data_root)
-data_paths:
-  data_root: "./data"
+# Analysis year
+year: 2022
 
-  # Counter data
+# Analysis period (STADTRADELN campaign bounds)
+period:
+  start: "2022-05-01"
+  end: "2022-09-30"
+
+# Data paths
+data:
+  # STADTRADELN traffic volumes
+  traffic_volumes: "trafficvolumes/SR22_Hessen_VM_assessed.fgb"
+
+  # Counter data (required for training)
   counter_locations: "counter-locations/DZS_ecovisio_2022.csv"
   counter_measurements: "counts/DZS_counts_ecovisio_2022.csv"
 
-  # Traffic volumes from STADTRADELN GPS traces
-  traffic_volumes: "trafficvolumes/SR22_Hessen_VM_assessed.fgb"
-
-  # Structural data
-  municipalities: "structural-data/DE_VG250.gpkg"
-  regiostar: "structural-data/regiostar_2022.csv"
+  # Project-specific overrides
   city_centroids: "structural-data/places_centroids_hessen.gpkg"
-
-  # STADTRADELN participation data
   kommunen_stats: "kommunen-stats/kommunen_stats_ds2022_2022_10_12.shp"
-  campaign_stats: "campaign/SR_TeilnehmendeKommunen2018-2024_v2.csv"
 
-# MLflow configuration
-mlflow:
-  experiment_name: "hessen-dtv-2022"
-
-# Training configuration overrides
+# Training overrides
 training:
   min_dtv: 25
-
-# Output paths
-output:
-  plots_dir: "./plots/hessen_2022"
-  predictions_dir: "./predictions/hessen_2022"

@@ -91,3 +91,4 @@ data/
 plots/
 predictions/
 bin/
+configs/*_*.yml

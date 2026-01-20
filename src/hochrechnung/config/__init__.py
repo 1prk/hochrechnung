@@ -19,10 +19,10 @@ from hochrechnung.config.settings import (
 __all__ = [
     "DataPathsConfig",
     "FeatureConfig",
-    "load_config",
     "MLflowConfig",
     "PipelineConfig",
     "RegionConfig",
     "TemporalConfig",
     "TrainingConfig",
+    "load_config",
 ]

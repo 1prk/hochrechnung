@@ -54,6 +54,87 @@ class PredictionResult:
     n_failures: int
 
 
+def _debug_model_features(model: Any) -> list[str] | None:
+    """Extract expected feature names from model's preprocessor."""
+    try:
+        # Navigate through TransformedTargetRegressor -> Pipeline -> preprocessor
+        if hasattr(model, "regressor"):
+            pipeline = model.regressor
+        else:
+            pipeline = model
+
+        if hasattr(pipeline, "named_steps"):
+            preprocessor = pipeline.named_steps.get("preprocessor")
+            if preprocessor is not None and hasattr(preprocessor, "transformers"):
+                expected_features = []
+                for name, transformer, columns in preprocessor.transformers:
+                    if columns:
+                        expected_features.extend(columns)
+                return expected_features
+    except Exception as e:
+        log.debug(f"Could not extract model features: {e}")
+    return None
+
+
+def _impute_missing_values(features: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """
+    Impute missing values in features with median (numeric) or mode (categorical).
+
+    This ensures all edges get predictions, matching behavior from the old repo.
+
+    Args:
+        features: Feature DataFrame with potential NaN/inf values.
+
+    Returns:
+        Tuple of (imputed DataFrame, count of imputed values).
+    """
+    features_clean = features.copy()
+
+    # Replace infinite values with NaN first
+    features_clean = features_clean.replace([np.inf, -np.inf], np.nan)
+
+    # Count problematic values
+    nan_count = int(features_clean.isna().sum().sum())
+
+    if nan_count == 0:
+        return features_clean, 0
+
+    # Impute each column
+    for col in features_clean.columns:
+        if features_clean[col].isna().sum() == 0:
+            continue
+
+        if features_clean[col].dtype in ["float64", "float32", "int64", "int32"]:
+            # Numeric: fill with median, or 0 if all NaN
+            if features_clean[col].notna().any():
+                fill_value = features_clean[col].median()
+            else:
+                fill_value = 0.0
+            features_clean[col] = features_clean[col].fillna(fill_value)
+            log.debug(
+                "Imputed numeric column",
+                column=col,
+                fill_value=float(fill_value),
+                n_filled=int(features[col].isna().sum()),
+            )
+        else:
+            # Categorical: fill with mode, or 'unknown' if empty
+            if features_clean[col].notna().any():
+                mode_values = features_clean[col].mode()
+                fill_value = mode_values.iloc[0] if len(mode_values) > 0 else "unknown"
+            else:
+                fill_value = "unknown"
+            features_clean[col] = features_clean[col].fillna(fill_value)
+            log.debug(
+                "Imputed categorical column",
+                column=col,
+                fill_value=str(fill_value),
+                n_filled=int(features[col].isna().sum()),
+            )
+
+    return features_clean, nan_count
+
+
 def predict_traffic_volumes(
     model: Any,
     features: pd.DataFrame,
@@ -75,20 +156,25 @@ def predict_traffic_volumes(
     """
     log.info("Generating predictions", n_samples=len(features))
 
-    # Handle missing values
-    n_missing = features.isna().any(axis=1).sum()
-    if n_missing > 0:
-        log.warning("Features contain missing values", n_missing=int(n_missing))
+    # Impute missing values so all edges get predictions
+    # This matches behavior from the old repo (model_predict.py)
+    features_imputed, n_imputed = _impute_missing_values(features)
 
-    # Generate predictions
-    if batch_size and len(features) > batch_size:
-        predictions = _predict_in_batches(model, features, batch_size)
-    else:
-        try:
-            predictions = model.predict(features)
-        except Exception as e:
-            log.error("Prediction failed", error=str(e))
-            predictions = np.full(len(features), np.nan)
+    if n_imputed > 0:
+        log.info(
+            "Imputed missing feature values with median/mode",
+            n_imputed=n_imputed,
+        )
+
+    # Generate predictions for all rows
+    try:
+        if batch_size and len(features_imputed) > batch_size:
+            predictions = _predict_in_batches(model, features_imputed, batch_size)
+        else:
+            predictions = model.predict(features_imputed)
+    except Exception as e:
+        log.error("Prediction failed", error=str(e))
+        predictions = np.full(len(features_imputed), np.nan)
 
     # Build result DataFrame
     result_df = pd.DataFrame({"predicted_dtv": predictions})
@@ -201,28 +287,73 @@ def save_predictions(
     return output_file
 
 
-def load_model(model_path: Path | str) -> Any:
+@dataclass
+class LoadedModel:
     """
-    Load a saved model.
+    Container for a loaded model with its metadata.
+
+    Attributes:
+        model: The sklearn model/pipeline.
+        feature_names: Feature names the model was trained with (if available).
+        metadata: Full metadata dict (if available).
+    """
+
+    model: Any
+    feature_names: list[str] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+def load_model(model_path: Path | str) -> LoadedModel:
+    """
+    Load a saved model with its metadata.
 
     Args:
         model_path: Path to model file or MLflow URI.
 
     Returns:
-        Loaded model.
+        LoadedModel with model and feature metadata.
     """
+    import json
+
+    from hochrechnung.modeling.curated import CURATED_FEATURES
+
     model_path_str = str(model_path)
+    feature_names: list[str] | None = None
+    metadata: dict[str, Any] | None = None
 
     # Check if it's an MLflow URI
     if model_path_str.startswith("runs:/") or model_path_str.startswith("models:/"):
         import mlflow
 
-        return mlflow.sklearn.load_model(model_path_str)
+        model = mlflow.sklearn.load_model(model_path_str)
+    else:
+        # Load from file
+        import joblib
 
-    # Load from file
-    import joblib
+        model = joblib.load(model_path)
 
-    return joblib.load(model_path)
+        # Try to load sidecar metadata file
+        model_path_obj = Path(model_path)
+        metadata_path = model_path_obj.with_suffix(".meta.json")
+        if metadata_path.exists():
+            with metadata_path.open() as f:
+                metadata = json.load(f)
+                feature_names = metadata.get("feature_names")
+                log.info(
+                    "Loaded model metadata",
+                    features=feature_names,
+                    data_source=metadata.get("data_source"),
+                )
+        elif "_curated_" in model_path_obj.name:
+            # Fallback: detect curated models by filename pattern
+            # and use CURATED_FEATURES for backwards compatibility
+            feature_names = list(CURATED_FEATURES)
+            log.info(
+                "Detected curated model by filename, using default curated features",
+                features=feature_names,
+            )
+
+    return LoadedModel(model=model, feature_names=feature_names, metadata=metadata)
 
 
 @dataclass
@@ -249,7 +380,7 @@ class PredictionPipelineResult:
 
 def _get_prediction_cache(config: PipelineConfig) -> CacheManager:
     """Get cache manager for prediction operations."""
-    cache_dir = config.output.cache_dir / "prediction"
+    cache_dir = config.cache_dir / "prediction"
     return CacheManager(cache_dir)
 
 
@@ -288,6 +419,8 @@ class PredictionPipeline:
         model: Any,
         output_path: Path | None = None,
         output_format: str = "fgb",
+        *,
+        feature_names: list[str] | None = None,
     ) -> PredictionPipelineResult:
         """
         Run prediction pipeline on all traffic edges.
@@ -296,6 +429,8 @@ class PredictionPipeline:
             model: Trained model (sklearn pipeline).
             output_path: Optional path to save predictions.
             output_format: Output format ('fgb', 'csv', 'parquet').
+            feature_names: Feature names model was trained with. If provided,
+                overrides config features for proper column mapping.
 
         Returns:
             PredictionPipelineResult with predictions and statistics.
@@ -314,7 +449,7 @@ class PredictionPipeline:
             feature_df, geometry, edge_ids, original_crs, n_edges, traffic_gdf = (
                 cached_data
             )
-            features = self._prepare_features(feature_df)
+            features = self._prepare_features(feature_df, model_features=feature_names)
         else:
             # Build feature data from scratch
             # Step 1: Load traffic volumes (all edges)
@@ -333,6 +468,11 @@ class PredictionPipeline:
                 edge_id_cols.append("edge_id")
             edge_ids = traffic_gdf[edge_id_cols].copy()
 
+            # Add original index tracking to preserve row alignment through joins
+            # This ensures we can map predictions back to original edges
+            traffic_gdf = traffic_gdf.reset_index(drop=True)
+            traffic_gdf["_original_idx"] = traffic_gdf.index
+
             # Step 2: Join OSM infrastructure if not present
             if "bicycle_infrastructure" not in traffic_gdf.columns:
                 log.info("Step 2: Loading and joining OSM infrastructure")
@@ -345,13 +485,42 @@ class PredictionPipeline:
             log.info("Step 3: Adding structural data")
             traffic_gdf = self._add_structural_data(traffic_gdf)
 
+            # Validate row count after joins
+            if len(traffic_gdf) != n_edges:
+                log.warning(
+                    "Row count changed after joins",
+                    original=n_edges,
+                    after_joins=len(traffic_gdf),
+                )
+                # Deduplicate by original index, keeping first occurrence
+                traffic_gdf = traffic_gdf.drop_duplicates(
+                    subset=["_original_idx"], keep="first"
+                )
+                log.info(
+                    "Deduplicated to original row count",
+                    rows=len(traffic_gdf),
+                )
+
+            # Ensure rows are sorted by original index for alignment
+            traffic_gdf = traffic_gdf.sort_values("_original_idx").reset_index(
+                drop=True
+            )
+
             # Step 4: Compute derived features
             log.info("Step 4: Computing features")
             feature_df = self.feature_pipeline.process(traffic_gdf)
 
             # Step 5: Prepare features for model
             log.info("Step 5: Preparing features for model")
-            features = self._prepare_features(feature_df)
+            features = self._prepare_features(feature_df, model_features=feature_names)
+
+            # Final validation: ensure alignment with original data
+            if len(features) != n_edges:
+                msg = (
+                    f"Feature count ({len(features)}) does not match "
+                    f"original edge count ({n_edges}). Data alignment lost."
+                )
+                raise ValueError(msg)
 
             # Cache the feature data
             self._cache_features(
@@ -386,6 +555,8 @@ class PredictionPipeline:
         saved_path = None
         if output_path is not None:
             saved_path = save_predictions_geo(output_gdf, output_path, output_format)
+            # Generate diagnostic plots
+            save_prediction_diagnostics(output_gdf, saved_path)
 
         log.info(
             "Prediction pipeline complete",
@@ -417,6 +588,8 @@ class PredictionPipeline:
             log.warning("OSM data missing osm_id, cannot join infrastructure")
             return traffic_gdf
 
+        original_len = len(traffic_gdf)
+
         # Convert base_id to same type for matching
         traffic_gdf = traffic_gdf.copy()
         traffic_gdf["base_id"] = (
@@ -427,10 +600,21 @@ class PredictionPipeline:
         osm_df = osm_df.copy()
         osm_df["osm_id"] = osm_df["osm_id"].astype(str)
 
+        # Deduplicate OSM data to prevent row expansion during merge
+        # Keep first occurrence if multiple rows have same osm_id
+        osm_subset = osm_df[["osm_id", "bicycle_infrastructure"]]
+        osm_deduped = osm_subset.drop_duplicates(subset=["osm_id"], keep="first")
+        if len(osm_deduped) < len(osm_df):
+            log.debug(
+                "Deduplicated OSM data for merge",
+                original=len(osm_df),
+                deduped=len(osm_deduped),
+            )
+
         # Merge on base_id = osm_id
         original_crs = traffic_gdf.crs
         joined = traffic_gdf.merge(
-            osm_df[["osm_id", "bicycle_infrastructure"]],
+            osm_deduped,
             left_on="base_id",
             right_on="osm_id",
             how="left",
@@ -442,6 +626,14 @@ class PredictionPipeline:
         if not isinstance(joined, gpd.GeoDataFrame):
             joined = gpd.GeoDataFrame(joined, geometry="geometry", crs=original_crs)
 
+        # Validate row count preserved
+        if len(joined) != original_len:
+            log.warning(
+                "OSM join changed row count",
+                original=original_len,
+                after_join=len(joined),
+            )
+
         log.info(
             "Joined OSM infrastructure",
             matched=joined["bicycle_infrastructure"].notna().sum(),
@@ -452,6 +644,11 @@ class PredictionPipeline:
 
     def _add_structural_data(self, gdf: "gpd.GeoDataFrame") -> "gpd.GeoDataFrame":
         """Add municipality, RegioStaR, demographics, and distance features."""
+        import geopandas as gpd
+
+        original_len = len(gdf)
+        original_crs = gdf.crs
+
         # Load structural data
         municipalities = load_municipalities(self.config, validate=False)
         regiostar = load_regiostar(self.config, validate=False)
@@ -465,11 +662,22 @@ class PredictionPipeline:
             gdf["ars_12"] = gdf["ars"].astype(str).str[:12]
             regiostar["ars_12"] = regiostar["ars"].astype(str).str[:12]
 
-            gdf = gdf.merge(
-                regiostar[["ars_12", "regiostar5", "regiostar7"]],
+            # Deduplicate regiostar to prevent row expansion
+            regiostar_cols = ["ars_12", "regiostar5", "regiostar7"]
+            regiostar_cols = [c for c in regiostar_cols if c in regiostar.columns]
+            regiostar_subset = regiostar[regiostar_cols].drop_duplicates(
+                subset=["ars_12"], keep="first"
+            )
+
+            merged = gdf.merge(
+                regiostar_subset,
                 on="ars_12",
                 how="left",
             )
+            # Preserve GeoDataFrame type
+            if not isinstance(merged, gpd.GeoDataFrame):
+                merged = gpd.GeoDataFrame(merged, geometry="geometry", crs=original_crs)
+            gdf = merged
 
         # Calculate distances to city centroids
         gdf = calculate_distances_to_centroids(gdf, centroids)
@@ -478,18 +686,53 @@ class PredictionPipeline:
         try:
             demographics = load_demographics(self.config, validate=False)
             if "ars" in gdf.columns and "ars" in demographics.columns:
-                demo_cols = ["ars", "n_users", "n_trips", "total_km", "population"]
+                demo_cols = ["ars", "n_users", "n_trips", "total_km"]
                 demo_cols = [c for c in demo_cols if c in demographics.columns]
                 demographics["ars_12"] = demographics["ars"].astype(str).str[:12]
 
-                gdf = gdf.merge(
-                    demographics[["ars_12"] + [c for c in demo_cols if c != "ars"]],
+                # Check if demographics are county-aggregated
+                is_county_aggregated = "_county_aggregated" in demographics.columns
+
+                # Deduplicate demographics to prevent row expansion
+                demo_merge_cols = ["ars_12"] + [c for c in demo_cols if c != "ars"]
+                if is_county_aggregated:
+                    demo_merge_cols.append("_county_aggregated")
+                demo_subset = demographics[demo_merge_cols].drop_duplicates(
+                    subset=["ars_12"], keep="first"
+                )
+
+                merged = gdf.merge(
+                    demo_subset,
                     on="ars_12",
                     how="left",
                     suffixes=("", "_demo"),
                 )
+
+                # If county-aggregated, also aggregate population for correct participation_rate
+                if is_county_aggregated and "population" in merged.columns:
+                    county_total_pop = merged["population"].sum()
+                    log.info(
+                        "Using county-aggregated population for participation metrics",
+                        county_population=int(county_total_pop),
+                    )
+                    merged["population"] = county_total_pop
+
+                # Preserve GeoDataFrame type
+                if not isinstance(merged, gpd.GeoDataFrame):
+                    merged = gpd.GeoDataFrame(
+                        merged, geometry="geometry", crs=original_crs
+                    )
+                gdf = merged
         except FileNotFoundError:
             log.warning("Demographics data not found, skipping")
+
+        # Validate row count preserved
+        if len(gdf) != original_len:
+            log.warning(
+                "Structural data join changed row count",
+                original=original_len,
+                after_join=len(gdf),
+            )
 
         return gdf
 
@@ -574,13 +817,32 @@ class PredictionPipeline:
         )
         log.info("Cached prediction feature data")
 
-    def _prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _prepare_features(
+        self,
+        df: pd.DataFrame,
+        *,
+        model_features: list[str] | None = None,
+    ) -> pd.DataFrame:
         """
         Prepare features for model prediction.
 
         Maps columns to the format expected by the trained model.
         Uses the same feature names that training data uses.
+
+        Args:
+            df: DataFrame with raw feature data.
+            model_features: Feature names from model metadata. If provided,
+                overrides config features.
         """
+        # DEBUG: Show input data columns
+        print("\n" + "=" * 60)
+        print("DEBUG: _prepare_features INPUT")
+        print("=" * 60)
+        print(f"\nRaw DataFrame columns ({len(df.columns)}):")
+        print(f"   {list(df.columns)}")
+        print(f"\nModel features from metadata: {model_features}")
+        print(f"Config features: {self.config.features.model_features}")
+
         df = df.copy()
 
         # Column name mapping for prediction pipeline output to training data names
@@ -588,32 +850,37 @@ class PredictionPipeline:
         #   count -> stadtradeln_volume
         #   bicycle_infrastructure -> infra_category (via infrastructure mapping)
         # These need to match what the model was trained with
+        # Bidirectional mapping: both directions are checked
         column_aliases = {
-            # Prediction pipeline name -> config/model name alternatives
+            # Actual column name -> alternative names (aliases)
             "stadtradeln_volume": ["count", "Erh_SR"],
             "infra_category": ["bicycle_infrastructure", "OSM_Radinfra"],
             "dist_to_center_m": ["dist_to_centroid_m", "HubDist"],
-            "regiostar5": ["RegioStaR5"],
+            "regiostar5": ["RegioStaR5", "regiostar7"],  # RegioStaR variants
+            "regiostar7": ["RegioStaR7", "regiostar5"],  # RegioStaR variants
             "participation_rate": ["TN_SR_relativ"],
             "route_intensity": ["Streckengewicht_SR"],
         }
 
-        # Get expected features from config or use defaults
-        model_features = self.config.features.model_features
-        if not model_features:
-            # Default feature set matching the model training features
-            model_features = [
-                "infra_category",
-                "participation_rate",
-                "route_intensity",
-                "regiostar5",
-                "stadtradeln_volume",
-                "dist_to_center_m",
-            ]
+        # Get expected features: prefer model metadata, then config, then defaults
+        default_features = [
+            "infra_category",
+            "participation_rate",
+            "route_intensity",
+            "regiostar5",
+            "stadtradeln_volume",
+            "dist_to_center_m",
+        ]
+        if model_features:
+            expected_features = model_features
+        elif self.config.features.model_features:
+            expected_features = self.config.features.model_features
+        else:
+            expected_features = default_features
 
         # Resolve feature names: find available columns that match requested features
         feature_mapping: dict[str, str] = {}  # feature_name -> actual_column_name
-        for feature in model_features:
+        for feature in expected_features:
             if feature in df.columns:
                 feature_mapping[feature] = feature
             else:
@@ -622,7 +889,7 @@ class PredictionPipeline:
                     if feature in aliases and actual_col in df.columns:
                         feature_mapping[feature] = actual_col
                         break
-                # Also check reverse: if feature is the actual column and an alias is in model_features
+                # Also check reverse: if feature is the actual column and an alias is in df
                 if feature not in feature_mapping:
                     for actual_col, aliases in column_aliases.items():
                         if feature == actual_col:
@@ -634,7 +901,15 @@ class PredictionPipeline:
                                 break
 
         available = list(feature_mapping.keys())
-        missing = [f for f in model_features if f not in feature_mapping]
+        missing = [f for f in expected_features if f not in feature_mapping]
+
+        # DEBUG: Show feature mapping
+        print(f"\nExpected features: {expected_features}")
+        print("Feature mapping (requested -> actual column):")
+        for feat, col in feature_mapping.items():
+            print(f"   {feat} -> {col}")
+        print(f"Missing features: {missing}")
+        print("=" * 60 + "\n")
 
         if missing:
             log.warning("Missing features for prediction", missing=missing)
@@ -697,23 +972,134 @@ def save_predictions_geo(
     return output_file
 
 
+def save_prediction_diagnostics(
+    gdf: "gpd.GeoDataFrame",
+    output_path: Path,
+    *,
+    count_column: str = "stadtradeln_count",
+    pred_column: str = "predicted_dtv",
+) -> Path | None:
+    """
+    Generate diagnostic plots for prediction results.
+
+    Creates a figure with:
+    - Scatterplot of predicted vs count
+    - Histogram of predictions
+    - Density hexbin plot
+
+    Args:
+        gdf: GeoDataFrame with predictions.
+        output_path: Base path for output (will add _diagnostics.png suffix).
+        count_column: Name of count/volume column.
+        pred_column: Name of prediction column.
+
+    Returns:
+        Path to saved diagnostic image, or None if plotting failed.
+    """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        log.warning("matplotlib not available, skipping diagnostics")
+        return None
+
+    # Check required columns
+    if count_column not in gdf.columns:
+        log.warning("Count column not found, skipping diagnostics", column=count_column)
+        return None
+    if pred_column not in gdf.columns:
+        log.warning(
+            "Prediction column not found, skipping diagnostics", column=pred_column
+        )
+        return None
+
+    # Filter to valid predictions
+    valid_mask = gdf[pred_column].notna()
+    df = gdf.loc[valid_mask, [count_column, pred_column]].copy()
+
+    if len(df) == 0:
+        log.warning("No valid predictions for diagnostics")
+        return None
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    # 1. Scatterplot: predicted vs count (sampled for performance)
+    ax1 = axes[0]
+    sample = df.sample(n=min(10000, len(df)), random_state=42)
+    ax1.scatter(sample[count_column], sample[pred_column], alpha=0.3, s=5)
+    ax1.set_xlabel("STADTRADELN Count")
+    ax1.set_ylabel("Predicted DTV")
+    ax1.set_title("Predicted DTV vs STADTRADELN Count")
+    max_val = max(sample[count_column].max(), sample[pred_column].max())
+    ax1.plot([0, max_val], [0, max_val], "r--", alpha=0.5, label="y=x")
+    ax1.legend()
+
+    # 2. Histogram of predictions
+    ax2 = axes[1]
+    ax2.hist(df[pred_column], bins=50, edgecolor="black", alpha=0.7)
+    ax2.set_xlabel("Predicted DTV")
+    ax2.set_ylabel("Frequency")
+    ax2.set_title(f"Histogram of Predictions (n={len(df):,})")
+    median_val = df[pred_column].median()
+    ax2.axvline(median_val, color="r", linestyle="--", label=f"median={median_val:.0f}")
+    ax2.legend()
+
+    # 3. Hexbin density plot
+    ax3 = axes[2]
+    hb = ax3.hexbin(
+        df[count_column], df[pred_column], gridsize=50, cmap="YlOrRd", mincnt=1
+    )
+    ax3.set_xlabel("STADTRADELN Count")
+    ax3.set_ylabel("Predicted DTV")
+    ax3.set_title("Density: Predicted vs Count")
+    plt.colorbar(hb, ax=ax3, label="Count")
+    ax3.plot([0, 2000], [0, 2000], "b--", alpha=0.5)
+
+    plt.tight_layout()
+
+    # Save figure
+    diag_path = output_path.with_name(output_path.stem + "_diagnostics.png")
+    plt.savefig(diag_path, dpi=150)
+    plt.close(fig)
+
+    # Log summary statistics
+    corr = df[count_column].corr(df[pred_column])
+    log.info(
+        "Saved prediction diagnostics",
+        path=str(diag_path),
+        correlation=f"{corr:.3f}",
+        pred_median=f"{median_val:.1f}",
+        pred_min=f"{df[pred_column].min():.1f}",
+        pred_max=f"{df[pred_column].max():.1f}",
+    )
+
+    return diag_path
+
+
 def run_prediction(
     config: PipelineConfig,
     model: Any,
     output_path: Path | None = None,
     output_format: str = "fgb",
+    *,
+    feature_names: list[str] | None = None,
 ) -> PredictionPipelineResult:
     """
     Convenience function to run prediction pipeline.
 
     Args:
         config: Pipeline configuration.
-        model: Trained model.
+        model: Trained model (sklearn pipeline or LoadedModel).
         output_path: Optional path to save predictions.
         output_format: Output format ('fgb', 'csv', 'parquet').
+        feature_names: Feature names model was trained with.
 
     Returns:
         PredictionPipelineResult with predictions and statistics.
     """
     pipeline = PredictionPipeline(config)
-    return pipeline.run(model, output_path=output_path, output_format=output_format)
+    return pipeline.run(
+        model,
+        output_path=output_path,
+        output_format=output_format,
+        feature_names=feature_names,
+    )

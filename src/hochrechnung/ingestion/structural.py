@@ -46,11 +46,11 @@ class MunicipalityLoader(GeoDataLoader[MunicipalitySchema]):
         # Load gemeinde layer from VG250
         gdf = gpd.read_file(path, layer="v_vg250_gem")
 
-        # Filter by region code
-        region_code = self.config.region.code
-        gdf = gdf[gdf["Land"] == region_code]
+        # Filter by federal state (Land) using first 2 digits of ARS
+        land_code = self.config.land_code
+        gdf = gdf[gdf["Land"] == land_code]
 
-        log.info("Filtered to region", code=region_code, rows=len(gdf))
+        log.info("Filtered to region", land_code=land_code, rows=len(gdf))
 
         # Normalize column names
         column_mapping = {

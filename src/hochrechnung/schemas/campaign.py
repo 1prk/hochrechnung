@@ -4,8 +4,6 @@ Pandera schemas for STADTRADELN campaign data.
 STADTRADELN is a cycling campaign where participants track their rides.
 """
 
-from typing import Optional
-
 import pandera as pa
 from pandera.typing import Series
 
@@ -26,11 +24,11 @@ class CampaignMetadataSchema(pa.DataFrameModel):
         le=2030,
         description="Campaign year",
     )
-    start_date: Optional[Series[pa.DateTime]] = pa.Field(
+    start_date: Series[pa.DateTime] | None = pa.Field(
         nullable=True,
         description="Campaign start date for this municipality",
     )
-    end_date: Optional[Series[pa.DateTime]] = pa.Field(
+    end_date: Series[pa.DateTime] | None = pa.Field(
         nullable=True,
         description="Campaign end date for this municipality",
     )
@@ -66,7 +64,7 @@ class DemographicsSchema(pa.DataFrameModel):
         ge=0.0,
         description="Total kilometers cycled",
     )
-    bundesland: Optional[Series[str]] = pa.Field(
+    bundesland: Series[str] | None = pa.Field(
         nullable=True,
         description="Federal state name",
     )

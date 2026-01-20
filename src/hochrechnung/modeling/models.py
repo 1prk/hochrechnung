@@ -85,7 +85,7 @@ PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
         "regressor__model__min_samples_leaf": [16, 32, 64],
     },
     "SVR": {
-        "regressor__model__C": [1, 2, 3, 4],
+        "regressor__model__C": [1, 2], #3, 4 
         "regressor__model__gamma": ["auto", "scale", 0.1, 0.01, 0.001],
         "regressor__model__epsilon": [10, 1, 0.1, 0.01, 0.001],
         "regressor__model__kernel": ["poly", "rbf", "sigmoid"],

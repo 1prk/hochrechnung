@@ -98,13 +98,14 @@ class ModelTrainer:
         )
 
         # Identify feature types
+        # RegioStaR columns are ordinal categorical despite numeric dtype
+        ordinal_categorical = {"regiostar5", "regiostar7"}
         numeric_features = [
-            col for col in X.columns if X[col].dtype in ["int64", "float64"]
+            col
+            for col in X.columns
+            if X[col].dtype in ["int64", "float64"] and col not in ordinal_categorical
         ]
         categorical_features = [col for col in X.columns if col not in numeric_features]
-
-        # Models that should use Box-Cox transformation per Richter et al. (2025)
-        linear_models = {"Linear Regression", "Poisson Regression", "SVR"}
 
         # Get target transformer with clipping to prevent extreme extrapolation
         # Use max observed value * 2 as upper bound
@@ -114,26 +115,25 @@ class ModelTrainer:
             clip_max=clip_max,
         )
 
+        # Build preprocessor with feature-specific transformers
+        # This is shared across all model types since each feature gets
+        # its appropriate transformation (Box-Cox for stadtradeln_volume,
+        # RobustScaler for ratios, etc.)
+        preprocessor = build_preprocessor(
+            self.config,
+            numeric_features=numeric_features,
+            categorical_features=categorical_features,
+        )
+
         # Train each model
         for name in model_names:
             if name not in MODEL_REGISTRY:
                 log.warning("Unknown model, skipping", name=name)
                 continue
 
-            # Build model-specific preprocessor
-            # Per Richter et al. (2025): Box-Cox for linear models, StandardScaler for tree-based
-            use_power_transform = name in linear_models
-            preprocessor = build_preprocessor(
-                self.config,
-                numeric_features=numeric_features,
-                categorical_features=categorical_features,
-                use_power_transform=use_power_transform,
-            )
-
             log.info(
                 "Training model",
                 name=name,
-                use_power_transform=use_power_transform,
             )
             trained = self._train_single_model(
                 X,

@@ -2,8 +2,6 @@
 Pandera schemas for model output data.
 """
 
-from typing import Optional
-
 import pandera.pandas as pa
 from pandera.typing import Series
 
@@ -15,7 +13,7 @@ class PredictionOutputSchema(pa.DataFrameModel):
     Validates the structure of prediction results.
     """
 
-    edge_id: Optional[Series[int]] = pa.Field(
+    edge_id: Series[int] | None = pa.Field(
         nullable=True,
         description="Edge identifier (if available)",
     )
@@ -23,11 +21,11 @@ class PredictionOutputSchema(pa.DataFrameModel):
         ge=0,
         description="Predicted daily traffic volume",
     )
-    prediction_lower: Optional[Series[float]] = pa.Field(
+    prediction_lower: Series[float] | None = pa.Field(
         nullable=True,
         description="Lower bound of prediction interval",
     )
-    prediction_upper: Optional[Series[float]] = pa.Field(
+    prediction_upper: Series[float] | None = pa.Field(
         nullable=True,
         description="Upper bound of prediction interval",
     )

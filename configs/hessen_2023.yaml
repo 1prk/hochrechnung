@@ -1,57 +1,34 @@
 # Configuration for Hessen 2023 bicycle traffic estimation
-# Extends base.yaml with region/year-specific settings
+# Extends base.yaml with project-specific settings
 
-# Region configuration
-region:
-  code: "06"  # Federal state code for Hessen
-  name: "Hessen"
+# Project identifier (drives MLflow experiment + output paths)
+project: hessen-2023
 
-# Temporal configuration
-temporal:
-  year: 2023
-  # STADTRADELN campaign period (varies by municipality, using overall bounds)
-  campaign_start: "2023-05-01"
-  campaign_end: "2023-09-30"
-  # Counter measurement period
-  counter_period_start: "2023-05-01"
-  counter_period_end: "2023-09-30"
-  # School holidays (for feature engineering)
-  holiday_start: "2023-07-15"
-  holiday_end: "2023-08-23"
+# 12-digit ARS for Hessen (state-level, padded with zeros)
+ars: "060000000000"
+region_name: "Hessen"
 
-# Data paths (relative to data_root)
-data_paths:
-  data_root: "./data"
+# Analysis year
+year: 2023
 
-  # Counter data
+# Analysis period (STADTRADELN campaign bounds)
+period:
+  start: "2023-05-01"
+  end: "2023-09-30"
+
+# Data paths
+data:
+  # STADTRADELN traffic volumes
+  traffic_volumes: "trafficvolumes/SR23_Hessen_VM.fgb"
+
+  # Counter data (required for training)
   counter_locations: "counter-locations/DZS_ecovisio_2024_complete.csv"
   counter_measurements: "counts/DZS_counts_ecovisio_2023.csv"
 
-  # OSM data
-  osm_pbf: "osm-data/hessen-230101.osm.pbf"
-
-  # Traffic volumes from STADTRADELN GPS traces
-  traffic_volumes: "trafficvolumes/SR23_Hessen_VM.fgb"
-
-  # Structural data
-  municipalities: "structural-data/DE_VG250.gpkg"
-  regiostar: "structural-data/regiostar_2022.csv"
+  # Optional: use Hessen-specific files instead of Germany-wide
+  # osm_pbf: "osm-data/hessen-230101.osm.pbf"
   city_centroids: "structural-data/places_centroids_hessen.gpkg"
 
-  # STADTRADELN participation data
-  kommunen_stats: "kommunen-stats/kommunen_stats_ds2023_2023_10_09.shp"
-  campaign_stats: "campaign/SR_TeilnehmendeKommunen2018-2024_v2.csv"
-
-# MLflow configuration
-mlflow:
-  experiment_name: "hessen-dtv-2023"
-
-# Training configuration overrides
+# Training overrides
 training:
-  min_dtv: 25
-  # max_dtv: 500  # Optional upper bound
-
-# Output paths
-output:
-  plots_dir: "./plots/hessen_2023"
-  predictions_dir: "./predictions/hessen_2023"
+  min_dtv: 10
