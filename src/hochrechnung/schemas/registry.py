@@ -10,11 +10,16 @@ from typing import TYPE_CHECKING, ClassVar
 
 import pandera.pandas as pa
 
-from hochrechnung.schemas.campaign import CampaignMetadataSchema, DemographicsSchema
+from hochrechnung.schemas.campaign import (
+    CampaignMetadataSchema,
+    CommuneStatisticsSchema,
+    DemographicsSchema,
+)
 from hochrechnung.schemas.counter import CounterLocationSchema, CounterMeasurementSchema
 from hochrechnung.schemas.infrastructure import OSMInfrastructureSchema
 from hochrechnung.schemas.structural import (
     CityCentroidSchema,
+    GebietseinheitenSchema,
     MunicipalitySchema,
     RegioStarSchema,
 )
@@ -136,6 +141,20 @@ class SchemaRegistry:
             version="1.0.0",
             role=DataRole.SOURCE,
             description="City/town center points",
+        ),
+        "commune_statistics": SchemaInfo(
+            name="commune_statistics",
+            schema=CommuneStatisticsSchema,
+            version="1.0.0",
+            role=DataRole.SOURCE,
+            description="STADTRADELN commune statistics from JSON files",
+        ),
+        "gebietseinheiten": SchemaInfo(
+            name="gebietseinheiten",
+            schema=GebietseinheitenSchema,
+            version="1.0.0",
+            role=DataRole.SOURCE,
+            description="DE_Gebietseinheiten administrative boundary data",
         ),
     }
 

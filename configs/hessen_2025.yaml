@@ -1,29 +1,28 @@
 # Configuration for Hessen
 
 # Project identifier (drives MLflow experiment + output paths)
-project: hessen-2022
+project: hessen-2025
 
 # 12-digit ARS for Landkreis Darmstadt-Dieburg
 ars: "060000000000"
 region_name: "Hessen"
 
 # Analysis year
-year: 2022
+year: 2025
 
 # Analysis period
 period:
-  start: "2022-05-01"
-  end: "2022-09-30"
+  start: "2025-05-01"
+  end: "2025-09-30"
 
 # Data paths - only traffic_volumes required for prediction
 data:
-  traffic_volumes: "/mnt/c/Users/Porojkow/Documents/Projekte/VV01_Hessen/hochrechnung/data/trafficvolumes/SR22_Hessen_VM.fgb"
-  osm_pbf: "osm-data/hessen-220101.osm.pbf"
+  traffic_volumes: "/mnt/c/Users/Porojkow/Documents/Projekte/VV01_Hessen/hochrechnung/data/trafficvolumes/SR25_Hessen_VM.gpkg"
+  osm_pbf: "osm-data/hessen-250101.osm.pbf"
   city_centroids: "structural-data/places.gpkg"
   counter_locations: "counter-locations/DZS_ecovisio_2024_complete.csv"
-  counter_measurements: "counts/DZS_counts_ecovisio_2022.csv"
+  counter_measurements: "counts/DZS_counts_ecovisio_2025.csv"
   gebietseinheiten: "structural-data/DE_Gebietseinheiten.gpkg"
-  kommunen_stats: "kommunen-stats/SR22_Commune_Statistics.json"
 
 # Statistics approach configuration
 # approach: legacy (default) uses kommunen_stats shapefiles + VG250

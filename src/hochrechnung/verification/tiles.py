@@ -69,10 +69,19 @@ def generate_verification_mbtiles(
 
     # Check ogr2ogr availability
     if not check_gdal_installation():
-        msg = (
-            "ogr2ogr not found. Download GISInternals GDAL release and "
-            "extract to bin/release-1930-x64-gdal-3-11-3-mapserver-8-4-0/"
-        )
+        import sys
+
+        if sys.platform == "win32":
+            msg = (
+                "ogr2ogr not found. Download GISInternals GDAL release and "
+                "extract to bin/release-1930-x64-gdal-3-11-3-mapserver-8-4-0/"
+            )
+        else:
+            msg = (
+                "ogr2ogr not found. Install GDAL:\n"
+                "  Ubuntu/Debian: sudo apt install gdal-bin\n"
+                "  macOS: brew install gdal"
+            )
         raise FileNotFoundError(msg)
 
     # Filter to counters needing tiles if requested
@@ -114,7 +123,7 @@ def generate_verification_mbtiles(
 
         search_areas = []
         if len(regular_counters) > 0:
-            search_areas.append(regular_counters.buffer(buffer_m).union_all())
+            search_areas.append(regular_counters.buffer(buffer_m).unary_union)
         if len(no_volume_counters) > 0:
             log.info(
                 "Using larger buffer for no_volume counters",
@@ -122,7 +131,7 @@ def generate_verification_mbtiles(
                 buffer_m=no_volume_buffer_m,
             )
             search_areas.append(
-                no_volume_counters.buffer(no_volume_buffer_m).union_all()
+                no_volume_counters.buffer(no_volume_buffer_m).unary_union
             )
 
         if search_areas:
@@ -130,9 +139,9 @@ def generate_verification_mbtiles(
 
             search_area = shapely_union(search_areas)
         else:
-            search_area = flagged_metric.buffer(buffer_m).union_all()
+            search_area = flagged_metric.buffer(buffer_m).unary_union
     else:
-        search_area = flagged_metric.buffer(buffer_m).union_all()
+        search_area = flagged_metric.buffer(buffer_m).unary_union
 
     # Filter edges to search area
     relevant_edges = edges_metric[edges_metric.intersects(search_area)].copy()

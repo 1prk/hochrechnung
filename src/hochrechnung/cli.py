@@ -64,7 +64,7 @@ def etl(
 
     # Set default output path if not specified
     if output is None:
-        output = Path(f"./cache/training_data_{pipeline_config.year}.csv")
+        output = pipeline_config.cache_dir / f"training_data_{pipeline_config.year}.csv"
 
     console.print(f"[blue]Running ETL pipeline for year {pipeline_config.year}[/blue]")
     console.print(f"[dim]Mode: {mode}[/dim]")
@@ -460,6 +460,20 @@ def train(
                 output / f"{safe_name}_{variant.value}_{pipeline_config.year}.joblib"
             )
             joblib.dump(trained_model.pipeline, model_path)
+
+            # Save metadata sidecar file with feature names
+            import json
+            metadata = {
+                "feature_names": trained_model.feature_names,
+                "model_name": name,
+                "variant": variant.value,
+                "year": pipeline_config.year,
+                "cv_scores": trained_model.cv_scores,
+            }
+            metadata_path = model_path.with_suffix(".meta.json")
+            with metadata_path.open("w") as f:
+                json.dump(metadata, f, indent=2)
+
             console.print(f"[green]Saved: {model_path}[/green]")
 
     # Print comparison summary

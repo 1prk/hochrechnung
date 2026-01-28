@@ -12,9 +12,9 @@ from typing import TYPE_CHECKING, Literal
 
 import pandas as pd
 
-from hochrechnung.config.settings import PipelineConfig
+from hochrechnung.config.settings import PipelineConfig, StatisticsApproach
 from hochrechnung.features.pipeline import FeaturePipeline
-from hochrechnung.ingestion.campaign import load_demographics
+from hochrechnung.ingestion.campaign import load_aggregated_statistics, load_demographics
 from hochrechnung.ingestion.counter import (
     load_counter_locations,
     load_counter_measurements,
@@ -785,7 +785,18 @@ class ETLPipeline:
         return joined
 
     def _add_structural_data(self, gdf: "gpd.GeoDataFrame") -> "gpd.GeoDataFrame":
-        """Add municipality, RegioStaR, and distance features."""
+        """Add municipality, RegioStaR, and distance features.
+
+        Switches between legacy and gebietseinheiten approaches based on config.
+        """
+        if self.config.stats.approach == StatisticsApproach.GEBIETSEINHEITEN:
+            return self._add_structural_data_gebietseinheiten(gdf)
+        return self._add_structural_data_legacy(gdf)
+
+    def _add_structural_data_legacy(
+        self, gdf: "gpd.GeoDataFrame"
+    ) -> "gpd.GeoDataFrame":
+        """Add structural data using legacy approach (VG250 + kommunen_stats)."""
         # Load structural data
         municipalities = load_municipalities(self.config, validate=False)
         regiostar = load_regiostar(self.config, validate=False)
@@ -810,16 +821,22 @@ class ETLPipeline:
         gdf = calculate_distances_to_centroids(gdf, centroids)
 
         # Load demographics for participation metrics
+        # Note: VG250 uses 12-digit ARS with sub-identifiers (e.g., 064310001001)
+        # while demographics JSON uses trailing zeros (e.g., 064310001000).
+        # Matching on first 9 characters (municipality prefix) gives best results.
         try:
             demographics = load_demographics(self.config, validate=False)
             if "ars" in gdf.columns and "ars" in demographics.columns:
                 demo_cols = ["ars", "n_users", "n_trips", "total_km"]
                 demo_cols = [c for c in demo_cols if c in demographics.columns]
-                demographics["ars_12"] = demographics["ars"].astype(str).str[:12]
+
+                # Use 9-character prefix for matching (municipality level)
+                gdf["ars_9"] = gdf["ars"].astype(str).str[:9]
+                demographics["ars_9"] = demographics["ars"].astype(str).str[:9]
 
                 gdf = gdf.merge(
-                    demographics[["ars_12"] + [c for c in demo_cols if c != "ars"]],
-                    on="ars_12",
+                    demographics[["ars_9"] + [c for c in demo_cols if c != "ars"]],
+                    on="ars_9",
                     how="left",
                     suffixes=("", "_demo"),
                 )
@@ -827,6 +844,332 @@ class ETLPipeline:
             log.warning("Demographics data not found, skipping")
 
         return gdf
+
+    def _add_structural_data_gebietseinheiten(
+        self, gdf: "gpd.GeoDataFrame"
+    ) -> "gpd.GeoDataFrame":
+        """Add structural data using Gebietseinheiten approach.
+
+        Uses DE_Gebietseinheiten boundaries with aggregated commune statistics.
+        """
+        from hochrechnung.ingestion.gebietseinheiten import (
+            AdminLevel,
+            load_gebietseinheiten,
+        )
+
+        # Parse admin level from config
+        admin_level = AdminLevel.from_string(self.config.stats.admin_level)
+        log.info(
+            "Using Gebietseinheiten approach",
+            admin_level=admin_level.value,
+            prefix_len=admin_level.ars_prefix_length,
+        )
+
+        # Load Gebietseinheiten boundaries at configured admin level
+        gebietseinheiten = load_gebietseinheiten(
+            self.config, admin_level=admin_level, validate=False
+        )
+
+        # Load aggregated statistics at same admin level
+        aggregated_stats = load_aggregated_statistics(
+            self.config, admin_level=admin_level, validate=False
+        )
+
+        # Load RegioStaR and city centroids (same as legacy)
+        regiostar = load_regiostar(self.config, validate=False)
+        centroids = load_city_centroids(self.config, validate=False)
+
+        # Spatial join features with Gebietseinheiten boundaries
+        import geopandas as gpd
+
+        # Ensure both are in same CRS
+        if gdf.crs != gebietseinheiten.crs:
+            gebietseinheiten = gebietseinheiten.to_crs(gdf.crs)
+
+        # Spatial join to get admin unit ARS for each feature
+        # Use "intersects" instead of "within" to catch edge cases
+        gdf = gpd.sjoin(
+            gdf,
+            gebietseinheiten[["ars", "name", "geometry"]].rename(
+                columns={"ars": "admin_ars", "name": "admin_name"}
+            ),
+            how="left",
+            predicate="intersects",
+        )
+
+        # Drop index_right from sjoin if present
+        if "index_right" in gdf.columns:
+            gdf = gdf.drop(columns=["index_right"])
+
+        # Handle potential duplicates from "intersects" (points on boundaries)
+        id_col = "counter_id" if "counter_id" in gdf.columns else "name"
+        if id_col in gdf.columns:
+            n_before = len(gdf)
+            gdf = gdf.drop_duplicates(subset=[id_col], keep="first")
+            n_after = len(gdf)
+            if n_before != n_after:
+                log.info(
+                    "Removed duplicate rows from boundary intersections",
+                    before=n_before,
+                    after=n_after,
+                )
+
+        # Debug logging: show mapping for each counter
+        if "counter_id" in gdf.columns or "name" in gdf.columns:
+            id_col = "counter_id" if "counter_id" in gdf.columns else "name"
+            for _, row in gdf.iterrows():
+                counter_id = row.get(id_col)
+                admin_ars = row.get("admin_ars")
+                admin_name = row.get("admin_name", "N/A")
+                if pd.notna(admin_ars):
+                    log.info(
+                        "Mapping counter to Gebietseinheit",
+                        counter_id=counter_id,
+                        admin_ars=admin_ars,
+                        admin_name=admin_name,
+                    )
+                else:
+                    # Log counters that failed to match - these are the problem cases
+                    lat = row.get("latitude", row.get("lat", "N/A"))
+                    lon = row.get("longitude", row.get("lon", "N/A"))
+                    log.warning(
+                        "Counter not matched to any Gebietseinheit",
+                        counter_id=counter_id,
+                        latitude=lat,
+                        longitude=lon,
+                    )
+
+        n_matched = gdf["admin_ars"].notna().sum()
+        n_unmatched = gdf["admin_ars"].isna().sum()
+        log.info(
+            "Spatial joined with Gebietseinheiten",
+            matched=n_matched,
+            unmatched=n_unmatched,
+            total=len(gdf),
+        )
+
+        # Join aggregated statistics on admin ARS
+        if "admin_ars" in gdf.columns and "ars" in aggregated_stats.columns:
+            gdf = gdf.merge(
+                aggregated_stats[["ars", "n_users", "n_trips", "total_km"]],
+                left_on="admin_ars",
+                right_on="ars",
+                how="left",
+                suffixes=("", "_stats"),
+            )
+            # Drop duplicate ars column from stats
+            if "ars_stats" in gdf.columns:
+                gdf = gdf.drop(columns=["ars_stats"])
+
+            # Debug logging for statistics join
+            if "counter_id" in gdf.columns or "name" in gdf.columns:
+                id_col = "counter_id" if "counter_id" in gdf.columns else "name"
+                for _, row in gdf.iterrows():
+                    counter_id = row.get(id_col)
+                    n_users = row.get("n_users")
+                    admin_ars = row.get("admin_ars")
+                    if pd.isna(n_users):
+                        log.warning(
+                            "Counter missing STADTRADELN stats",
+                            counter_id=counter_id,
+                            admin_ars=admin_ars,
+                        )
+                    else:
+                        log.debug(
+                            "Counter STADTRADELN stats assigned",
+                            counter_id=counter_id,
+                            n_users=n_users,
+                            n_trips=row.get("n_trips"),
+                        )
+
+            n_with_stats = gdf["n_users"].notna().sum()
+            n_missing_stats = gdf["n_users"].isna().sum()
+            log.info(
+                "Joined aggregated STADTRADELN statistics",
+                with_stats=n_with_stats,
+                missing_stats=n_missing_stats,
+            )
+
+        # Aggregate population from VG250 municipalities by ARS prefix
+        population_agg = self._aggregate_population_by_admin_level(admin_level)
+        if "admin_ars" in gdf.columns and "ars" in population_agg.columns:
+            gdf = gdf.merge(
+                population_agg[["ars", "population"]],
+                left_on="admin_ars",
+                right_on="ars",
+                how="left",
+                suffixes=("", "_pop"),
+            )
+            # Drop duplicate ars column
+            if "ars_pop" in gdf.columns:
+                gdf = gdf.drop(columns=["ars_pop"])
+
+        # Join RegioStaR - requires municipality-level ARS
+        # RegioStaR is defined at municipality level, so we need to spatial join
+        # with municipalities to get the correct ARS for matching
+        municipalities = load_municipalities(self.config, validate=False)
+
+        # Ensure same CRS
+        if gdf.crs != municipalities.crs:
+            municipalities = municipalities.to_crs(gdf.crs)
+
+        # Spatial join to get municipality ARS
+        # Use "intersects" instead of "within" to catch edge cases
+        gdf = gpd.sjoin(
+            gdf,
+            municipalities[["ars", "geometry"]].rename(columns={"ars": "municipality_ars"}),
+            how="left",
+            predicate="intersects",
+        )
+        if "index_right" in gdf.columns:
+            gdf = gdf.drop(columns=["index_right"])
+
+        # Handle potential duplicates from "intersects" (points on boundaries)
+        id_col = "counter_id" if "counter_id" in gdf.columns else "name"
+        if id_col in gdf.columns:
+            n_before = len(gdf)
+            gdf = gdf.drop_duplicates(subset=[id_col], keep="first")
+            n_after = len(gdf)
+            if n_before != n_after:
+                log.info(
+                    "Removed duplicate rows from municipality boundary intersections",
+                    before=n_before,
+                    after=n_after,
+                )
+
+        # Debug logging for municipality join
+        if "counter_id" in gdf.columns or "name" in gdf.columns:
+            id_col = "counter_id" if "counter_id" in gdf.columns else "name"
+            for _, row in gdf.iterrows():
+                counter_id = row.get(id_col)
+                muni_ars = row.get("municipality_ars")
+                if pd.isna(muni_ars):
+                    lat = row.get("latitude", row.get("lat", "N/A"))
+                    lon = row.get("longitude", row.get("lon", "N/A"))
+                    log.warning(
+                        "Counter not matched to any municipality (VG250)",
+                        counter_id=counter_id,
+                        latitude=lat,
+                        longitude=lon,
+                    )
+                else:
+                    log.debug(
+                        "Mapping counter to municipality",
+                        counter_id=counter_id,
+                        municipality_ars=muni_ars,
+                    )
+
+        n_muni_matched = gdf["municipality_ars"].notna().sum()
+        n_muni_unmatched = gdf["municipality_ars"].isna().sum()
+        log.info(
+            "Spatial joined with municipalities (VG250)",
+            matched=n_muni_matched,
+            unmatched=n_muni_unmatched,
+        )
+
+        # Now join RegioStaR on municipality ARS
+        if "municipality_ars" in gdf.columns and "ars" in regiostar.columns:
+            gdf["ars_12"] = gdf["municipality_ars"].astype(str).str[:12]
+            regiostar["ars_12"] = regiostar["ars"].astype(str).str[:12]
+
+            # Debug: show ARS lookup details
+            gdf_ars_codes = set(gdf["ars_12"].dropna().unique())
+            regiostar_ars_codes = set(regiostar["ars_12"].unique())
+            missing_in_regiostar = gdf_ars_codes - regiostar_ars_codes
+            if missing_in_regiostar:
+                log.warning(
+                    "Municipality ARS codes not found in RegioStaR",
+                    missing_codes=list(missing_in_regiostar)[:10],
+                    total_missing=len(missing_in_regiostar),
+                )
+
+            gdf = gdf.merge(
+                regiostar[["ars_12", "regiostar5", "regiostar7"]],
+                on="ars_12",
+                how="left",
+            )
+
+            # Debug logging for RegioStaR join
+            if "counter_id" in gdf.columns or "name" in gdf.columns:
+                id_col = "counter_id" if "counter_id" in gdf.columns else "name"
+                for _, row in gdf.iterrows():
+                    counter_id = row.get(id_col)
+                    regiostar5 = row.get("regiostar5")
+                    muni_ars = row.get("municipality_ars")
+                    ars_12 = row.get("ars_12")
+                    if pd.isna(regiostar5):
+                        log.warning(
+                            "Counter missing RegioStaR5",
+                            counter_id=counter_id,
+                            municipality_ars=muni_ars,
+                            ars_12=ars_12,
+                        )
+                    else:
+                        log.debug(
+                            "Counter RegioStaR assigned",
+                            counter_id=counter_id,
+                            regiostar5=regiostar5,
+                        )
+
+            n_regiostar = gdf["regiostar5"].notna().sum()
+            n_missing_regiostar = gdf["regiostar5"].isna().sum()
+            log.info(
+                "Joined RegioStaR",
+                with_regiostar=n_regiostar,
+                missing_regiostar=n_missing_regiostar,
+            )
+
+        # Calculate distances to city centroids (same as legacy)
+        gdf = calculate_distances_to_centroids(gdf, centroids)
+
+        # Copy admin_ars to ars for downstream compatibility if ars doesn't exist
+        if "ars" not in gdf.columns and "admin_ars" in gdf.columns:
+            gdf["ars"] = gdf["admin_ars"]
+
+        return gdf
+
+    def _aggregate_population_by_admin_level(
+        self, admin_level: "AdminLevel"
+    ) -> pd.DataFrame:
+        """Aggregate municipality populations to admin level.
+
+        Args:
+            admin_level: Administrative level for aggregation.
+
+        Returns:
+            DataFrame with aggregated population by admin unit ARS.
+        """
+        from hochrechnung.ingestion.gebietseinheiten import AdminLevel
+
+        # Load municipalities from VG250
+        municipalities = load_municipalities(self.config, validate=False)
+
+        if "population" not in municipalities.columns:
+            log.warning("No population column in municipalities")
+            return pd.DataFrame(columns=["ars", "population"])
+
+        prefix_len = admin_level.ars_prefix_length
+
+        # Create aggregation key matching Gebietseinheiten ARS format
+        municipalities["ars_agg"] = (
+            municipalities["ars"].astype(str).str[:prefix_len].str.ljust(12, "0")
+        )
+
+        # Sum population by admin unit
+        pop_agg = (
+            municipalities.groupby("ars_agg", as_index=False)["population"]
+            .sum()
+            .rename(columns={"ars_agg": "ars"})
+        )
+
+        log.info(
+            "Aggregated population",
+            admin_level=admin_level.value,
+            municipalities=len(municipalities),
+            aggregated_units=len(pop_agg),
+        )
+
+        return pop_agg
 
     def _prepare_output(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -883,8 +1226,8 @@ class ETLPipeline:
 
         # Map to legacy output format
         # Note: normalize_columns renames count→stadtradeln_volume, so map that
+        # Use infra_category (simplified) for OSM_Radinfra, not bicycle_infrastructure
         output_mapping = {
-            "bicycle_infrastructure": "OSM_Radinfra",
             "infra_category": "OSM_Radinfra",
             "participation_rate": "TN_SR_relativ",
             "route_intensity": "Streckengewicht_SR",
@@ -896,6 +1239,10 @@ class ETLPipeline:
             "longitude": "lon",
             "dtv": "DZS_mean_SR",
         }
+
+        # Drop bicycle_infrastructure if infra_category exists (avoid duplicates)
+        if "infra_category" in df.columns and "bicycle_infrastructure" in df.columns:
+            df = df.drop(columns=["bicycle_infrastructure"])
 
         # Rename columns that exist
         rename_dict = {k: v for k, v in output_mapping.items() if k in df.columns}

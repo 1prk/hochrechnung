@@ -1,19 +1,25 @@
 """
-GDAL/OGR environment setup for standalone binaries.
+GDAL/OGR environment setup.
 
-Configures environment for running ogr2ogr from bundled GISInternals release.
+Supports both system-installed GDAL (Linux/macOS) and bundled GISInternals (Windows).
 """
 
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from hochrechnung.utils.logging import get_logger
 
 log = get_logger(__name__)
 
-# GISInternals release bundled in bin/
+# GISInternals release bundled in bin/ (Windows only)
 _GDAL_RELEASE_NAME = "release-1930-x64-gdal-3-11-3-mapserver-8-4-0"
+
+# Cache for system ogr2ogr path
+_system_ogr2ogr_path: Path | None = None
+_use_system_gdal: bool | None = None
 
 
 def _find_project_root() -> Path:
@@ -34,9 +40,34 @@ def _find_project_root() -> Path:
     raise FileNotFoundError(msg)
 
 
+def _check_system_ogr2ogr() -> Path | None:
+    """
+    Check if ogr2ogr is available on system PATH.
+
+    Returns:
+        Path to ogr2ogr if found, None otherwise.
+    """
+    global _system_ogr2ogr_path
+
+    if _system_ogr2ogr_path is not None:
+        return _system_ogr2ogr_path
+
+    ogr2ogr_path = shutil.which("ogr2ogr")
+    if ogr2ogr_path is not None:
+        _system_ogr2ogr_path = Path(ogr2ogr_path)
+        return _system_ogr2ogr_path
+
+    return None
+
+
+def _is_windows() -> bool:
+    """Check if running on Windows."""
+    return sys.platform == "win32"
+
+
 def get_gdal_root() -> Path:
     """
-    Get path to bundled GDAL installation.
+    Get path to bundled GDAL installation (Windows only).
 
     Returns:
         Path to GDAL bin directory containing DLLs and executables.
@@ -61,34 +92,65 @@ def get_ogr2ogr_path() -> Path:
     """
     Get path to ogr2ogr executable.
 
+    On Linux/macOS, uses system-installed ogr2ogr.
+    On Windows, uses bundled GISInternals installation.
+
     Returns:
-        Path to ogr2ogr.exe.
+        Path to ogr2ogr executable.
 
     Raises:
         FileNotFoundError: If ogr2ogr not found.
     """
-    gdal_root = get_gdal_root()
-    ogr2ogr = gdal_root / "gdal" / "apps" / "ogr2ogr.exe"
+    # First, check for system ogr2ogr (preferred on Linux/macOS)
+    system_ogr2ogr = _check_system_ogr2ogr()
+    if system_ogr2ogr is not None:
+        return system_ogr2ogr
 
-    if not ogr2ogr.exists():
-        msg = f"ogr2ogr.exe not found at {ogr2ogr}"
-        raise FileNotFoundError(msg)
+    # Fall back to bundled Windows version
+    if _is_windows():
+        gdal_root = get_gdal_root()
+        ogr2ogr = gdal_root / "gdal" / "apps" / "ogr2ogr.exe"
 
-    return ogr2ogr
+        if not ogr2ogr.exists():
+            msg = f"ogr2ogr.exe not found at {ogr2ogr}"
+            raise FileNotFoundError(msg)
+
+        return ogr2ogr
+
+    # Not found anywhere
+    if _is_windows():
+        msg = (
+            "ogr2ogr not found. Download GISInternals GDAL release and "
+            f"extract to bin/{_GDAL_RELEASE_NAME}/"
+        )
+    else:
+        msg = (
+            "ogr2ogr not found. Install GDAL:\n"
+            "  Ubuntu/Debian: sudo apt install gdal-bin\n"
+            "  macOS: brew install gdal\n"
+            "  Fedora: sudo dnf install gdal"
+        )
+    raise FileNotFoundError(msg)
 
 
 def get_gdal_env() -> dict[str, str]:
     """
     Build environment dict for running GDAL tools.
 
-    Sets PATH, GDAL_DATA, and PROJ_LIB to bundled locations.
+    On Linux/macOS with system GDAL, returns current environment unchanged.
+    On Windows with bundled GDAL, sets PATH, GDAL_DATA, and PROJ_LIB.
 
     Returns:
         Environment dictionary ready for subprocess.run(env=...).
 
     Raises:
-        FileNotFoundError: If GDAL installation not found.
+        FileNotFoundError: If GDAL installation not found (Windows only).
     """
+    # If using system GDAL, no special environment needed
+    if _check_system_ogr2ogr() is not None:
+        return os.environ.copy()
+
+    # Windows bundled GDAL needs special environment
     gdal_root = get_gdal_root()
 
     gdal_data = gdal_root / "gdal-data"

@@ -6,10 +6,33 @@ No hardcoded year/region logic in processing code.
 """
 
 from datetime import date
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+class StatisticsApproach(str, Enum):
+    """Approach for loading STADTRADELN statistics."""
+
+    LEGACY = "legacy"  # kommunen_stats shapefiles + VG250
+    GEBIETSEINHEITEN = "gebietseinheiten"  # DE_Gebietseinheiten + aggregated JSON
+
+
+class StatsConfig(BaseModel):
+    """Configuration for STADTRADELN statistics loading."""
+
+    model_config = ConfigDict(frozen=True)
+
+    approach: StatisticsApproach = Field(
+        default=StatisticsApproach.LEGACY,
+        description="Approach for loading statistics",
+    )
+    admin_level: str = Field(
+        default="Verwaltungsgemeinschaft",
+        description="Administrative level for aggregation (Verwaltungsgemeinschaft, Kreis, Land)",
+    )
 
 
 class RegionConfig(BaseModel):
@@ -145,6 +168,10 @@ class DataPathsConfig(BaseModel):
     campaign_stats: Path = Field(
         default=Path("campaign/SR_TeilnehmendeKommunen.csv"),
         description="Path to campaign statistics CSV",
+    )
+    gebietseinheiten: Path = Field(
+        default=Path("structural-data/DE_Gebietseinheiten.gpkg"),
+        description="Path to DE_Gebietseinheiten GPKG",
     )
 
     def resolve(self, path_attr: str) -> Path:
@@ -284,6 +311,7 @@ class PipelineConfig(BaseModel):
     mlflow: MLflowConfig
     output: OutputConfig
     curated: CuratedConfig = Field(default_factory=CuratedConfig)
+    stats: StatsConfig = Field(default_factory=StatsConfig)
 
     @property
     def year(self) -> int:

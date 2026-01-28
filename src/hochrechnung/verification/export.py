@@ -5,6 +5,7 @@ Creates JSON files with counter data for the verification interface.
 """
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,31 @@ log = get_logger(__name__)
 def _is_valid(value: Any) -> bool:
     """Check if a value is valid (not NaN/None)."""
     return bool(pd.notna(value))
+
+
+def _sanitize_for_json(obj: Any) -> Any:
+    """
+    Recursively sanitize data for JSON serialization.
+
+    Replaces NaN/Infinity with None (becomes null in JSON).
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_for_json(item) for item in obj]
+    # Handle numpy types
+    if hasattr(obj, "item"):  # numpy scalar
+        val = obj.item()
+        if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+            return None
+        return val
+    return obj
 
 
 # Severity display configuration
@@ -186,9 +212,10 @@ def export_verification_data(
         "counters": counters_export,
     }
 
-    # Write JSON
+    # Sanitize and write JSON (NaN/Infinity -> null for JS compatibility)
+    sanitized_data = _sanitize_for_json(export_data)
     with output_path.open("w") as f:
-        json.dump(export_data, f, indent=2)
+        json.dump(sanitized_data, f, indent=2, allow_nan=False)
 
     file_size_kb = output_path.stat().st_size / 1e3
     log.info(

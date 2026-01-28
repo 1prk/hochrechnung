@@ -369,6 +369,11 @@ def spatial_join_municipalities(
     """
     Spatially join features with municipality boundaries.
 
+    Uses centroid-based matching: computes centroids of input geometries and
+    joins them to municipalities using "within" predicate. This handles edge
+    cases where line geometries cross municipal boundaries by assigning them
+    to the municipality containing their center point.
+
     Args:
         gdf: GeoDataFrame with geometries.
         municipalities: GeoDataFrame with municipality polygons.
@@ -385,8 +390,18 @@ def spatial_join_municipalities(
     if gdf.crs is not None and gdf.crs != municipalities.crs:
         municipalities = municipalities.to_crs(gdf.crs)
 
-    # Perform spatial join
-    result = gpd.sjoin(gdf, municipalities, how=how, predicate="within")
+    # Create centroid-based GeoDataFrame for spatial join
+    # This handles boundary-crossing lines by using their center point
+    gdf_centroids = gdf.copy()
+    gdf_centroids["_original_geometry"] = gdf_centroids.geometry
+    gdf_centroids.geometry = gdf_centroids.geometry.centroid
+
+    # Perform spatial join using centroids (fast, no duplicates)
+    result = gpd.sjoin(gdf_centroids, municipalities, how=how, predicate="within")
+
+    # Restore original geometries
+    result.geometry = result["_original_geometry"]
+    result = result.drop(columns=["_original_geometry"])
 
     # Clean up index column
     if "index_right" in result.columns:
@@ -397,6 +412,6 @@ def spatial_join_municipalities(
 
     # Ensure we return a GeoDataFrame
     if not isinstance(result, gpd.GeoDataFrame):
-        result = gpd.GeoDataFrame(result)
+        result = gpd.GeoDataFrame(result, crs=gdf.crs)
 
     return result

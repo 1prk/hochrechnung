@@ -12,6 +12,7 @@ import pandas as pd
 import pandera as pa
 
 from hochrechnung.config.settings import PipelineConfig
+from hochrechnung.ingestion.traffic import TrafficVolumeLoader
 from hochrechnung.schemas.registry import SchemaRegistry
 from hochrechnung.utils.logging import get_logger
 
@@ -40,7 +41,8 @@ DATASET_SCHEMA_MAP: dict[str, str] = {
     "regiostar": "regiostar",
     "city_centroids": "city_centroid",
     "campaign_stats": "campaign_metadata",
-    # kommunen_stats has no schema yet - will be skipped with warning
+    "kommunen_stats": "commune_statistics",
+    "gebietseinheiten": "gebietseinheiten",
 }
 
 
@@ -130,7 +132,11 @@ class ValidationRunner:
 
         # Load and validate
         try:
-            df = self._load_file(file_path)
+            # Use specialized loaders for datasets that need column transformations
+            if dataset_attr == "traffic_volumes":
+                df = self._load_traffic_volumes()
+            else:
+                df = self._load_file(file_path)
             row_count = len(df)
 
             # Validate against schema
@@ -254,8 +260,30 @@ class ValidationRunner:
                 df = pd.DataFrame(gdf)
             return self._normalize_ars(df)
 
+        if suffix == ".json":
+            df = pd.read_json(file_path, dtype={"ars": str})
+            return self._normalize_ars(df)
+
         msg = f"Unsupported file format: {suffix}"
         raise ValueError(msg)
+
+    def _load_traffic_volumes(self) -> pd.DataFrame:
+        """
+        Load traffic volumes using TrafficVolumeLoader.
+
+        Uses the specialized loader which handles German-to-English column
+        renaming automatically.
+
+        Returns:
+            DataFrame with traffic volume data (geometry dropped for validation).
+        """
+        loader = TrafficVolumeLoader(self.config)
+        gdf = loader._load_raw_geo()
+
+        # Drop geometry for schema validation (schemas are for tabular data)
+        if "geometry" in gdf.columns:
+            return pd.DataFrame(gdf.drop(columns="geometry"))
+        return pd.DataFrame(gdf)
 
     def _normalize_ars(self, df: pd.DataFrame) -> pd.DataFrame:
         """

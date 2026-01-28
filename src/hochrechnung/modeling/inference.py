@@ -352,6 +352,25 @@ def load_model(model_path: Path | str) -> LoadedModel:
                 "Detected curated model by filename, using default curated features",
                 features=feature_names,
             )
+        elif "_enhanced_" in model_path_obj.name:
+            # Fallback: detect enhanced models by filename pattern
+            # and use ENHANCED_FEATURES from data module for backwards compatibility
+            from hochrechnung.modeling.data import ENHANCED_FEATURES
+
+            feature_names = list(ENHANCED_FEATURES)
+            log.info(
+                "Detected enhanced model by filename, using default enhanced features",
+                features=feature_names,
+            )
+        elif "_baseline_" in model_path_obj.name:
+            # Fallback: detect baseline models by filename pattern
+            from hochrechnung.modeling.data import BASELINE_FEATURE
+
+            feature_names = [BASELINE_FEATURE]
+            log.info(
+                "Detected baseline model by filename, using baseline feature",
+                features=feature_names,
+            )
 
     return LoadedModel(model=model, feature_names=feature_names, metadata=metadata)
 
@@ -683,27 +702,33 @@ class PredictionPipeline:
         gdf = calculate_distances_to_centroids(gdf, centroids)
 
         # Load demographics for participation metrics
+        # Note: VG250 uses 12-digit ARS with sub-identifiers (e.g., 064310001001)
+        # while demographics JSON uses trailing zeros (e.g., 064310001000).
+        # Matching on first 9 characters (municipality prefix) gives best results.
         try:
             demographics = load_demographics(self.config, validate=False)
             if "ars" in gdf.columns and "ars" in demographics.columns:
                 demo_cols = ["ars", "n_users", "n_trips", "total_km"]
                 demo_cols = [c for c in demo_cols if c in demographics.columns]
-                demographics["ars_12"] = demographics["ars"].astype(str).str[:12]
+
+                # Use 9-digit ARS prefix for matching (same as ETL pipeline)
+                gdf["ars_9"] = gdf["ars"].astype(str).str[:9]
+                demographics["ars_9"] = demographics["ars"].astype(str).str[:9]
 
                 # Check if demographics are county-aggregated
                 is_county_aggregated = "_county_aggregated" in demographics.columns
 
                 # Deduplicate demographics to prevent row expansion
-                demo_merge_cols = ["ars_12"] + [c for c in demo_cols if c != "ars"]
+                demo_merge_cols = ["ars_9"] + [c for c in demo_cols if c != "ars"]
                 if is_county_aggregated:
                     demo_merge_cols.append("_county_aggregated")
                 demo_subset = demographics[demo_merge_cols].drop_duplicates(
-                    subset=["ars_12"], keep="first"
+                    subset=["ars_9"], keep="first"
                 )
 
                 merged = gdf.merge(
                     demo_subset,
-                    on="ars_12",
+                    on="ars_9",
                     how="left",
                     suffixes=("", "_demo"),
                 )
@@ -834,15 +859,6 @@ class PredictionPipeline:
             model_features: Feature names from model metadata. If provided,
                 overrides config features.
         """
-        # DEBUG: Show input data columns
-        print("\n" + "=" * 60)
-        print("DEBUG: _prepare_features INPUT")
-        print("=" * 60)
-        print(f"\nRaw DataFrame columns ({len(df.columns)}):")
-        print(f"   {list(df.columns)}")
-        print(f"\nModel features from metadata: {model_features}")
-        print(f"Config features: {self.config.features.model_features}")
-
         df = df.copy()
 
         # Column name mapping for prediction pipeline output to training data names
@@ -902,14 +918,6 @@ class PredictionPipeline:
 
         available = list(feature_mapping.keys())
         missing = [f for f in expected_features if f not in feature_mapping]
-
-        # DEBUG: Show feature mapping
-        print(f"\nExpected features: {expected_features}")
-        print("Feature mapping (requested -> actual column):")
-        for feat, col in feature_mapping.items():
-            print(f"   {feat} -> {col}")
-        print(f"Missing features: {missing}")
-        print("=" * 60 + "\n")
 
         if missing:
             log.warning("Missing features for prediction", missing=missing)

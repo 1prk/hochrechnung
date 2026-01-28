@@ -141,6 +141,17 @@ def load_training_data(
     # Validate required columns exist
     _validate_columns(df, feature_cols, target_col)
 
+    # Drop rows with NaN in features (e.g., counters matched to edges with no volume)
+    before_dropna = len(df)
+    df = df.dropna(subset=feature_cols)
+    after_dropna = len(df)
+    if after_dropna < before_dropna:
+        log.info(
+            "Dropped rows with missing features",
+            dropped=before_dropna - after_dropna,
+            remaining=after_dropna,
+        )
+
     # Prepare X and y
     X = df[feature_cols].copy()
     y = df[target_col].copy()

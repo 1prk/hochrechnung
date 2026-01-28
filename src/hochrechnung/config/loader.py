@@ -23,6 +23,8 @@ from hochrechnung.config.settings import (
     PipelineConfig,
     PreprocessingConfig,
     RegionConfig,
+    StatisticsApproach,
+    StatsConfig,
     TemporalConfig,
     TrainingConfig,
 )
@@ -185,6 +187,9 @@ def load_config(
         campaign_stats=Path(data_data["campaign_stats"])
         if data_data.get("campaign_stats")
         else Path("campaign/SR_TeilnehmendeKommunen.csv"),
+        gebietseinheiten=Path(data_data["gebietseinheiten"])
+        if data_data.get("gebietseinheiten")
+        else Path("structural-data/DE_Gebietseinheiten.gpkg"),
     )
 
     # Features config (from base.yaml defaults)
@@ -248,6 +253,14 @@ def load_config(
         else None,
     )
 
+    # Stats config (optional - controls statistics loading approach)
+    stats_data = merged.get("stats", {})
+    stats_approach_str = stats_data.get("approach", "legacy")
+    stats = StatsConfig(
+        approach=StatisticsApproach(stats_approach_str),
+        admin_level=stats_data.get("admin_level", "Verwaltungsgemeinschaft"),
+    )
+
     return PipelineConfig(
         project=project,
         region=region,
@@ -260,4 +273,5 @@ def load_config(
         mlflow=mlflow,
         output=output,
         curated=curated,
+        stats=stats,
     )

@@ -231,19 +231,21 @@ class TestValidationRunner:
         self, minimal_config_dict: dict[str, Any], temp_data_dir: Path
     ) -> None:
         """Test validation skips datasets without schema mapping."""
-        # kommunen_stats has no schema mapping
-        kommunen_path = temp_data_dir / "kommunen_stats.csv"
-        pd.DataFrame({"dummy": [1, 2, 3]}).to_csv(kommunen_path, index=False)
+        # counter_measurements has no schema mapping (uses wide format)
+        measurements_path = temp_data_dir / "counter_measurements.csv"
+        pd.DataFrame({"dummy": [1, 2, 3]}).to_csv(measurements_path, index=False)
 
         config = _create_config_from_dict(minimal_config_dict)
         runner = ValidationRunner(config)
         results = runner.run()
 
-        # Find kommunen_stats result
-        kommunen_result = next(r for r in results if r.dataset_name == "kommunen_stats")
-        assert kommunen_result.schema_name is None
-        assert kommunen_result.schema_valid is None
-        assert "No schema mapping" in kommunen_result.error_message
+        # Find counter_measurements result
+        measurements_result = next(
+            r for r in results if r.dataset_name == "counter_measurements"
+        )
+        assert measurements_result.schema_name is None
+        assert measurements_result.schema_valid is None
+        assert "No schema mapping" in measurements_result.error_message
 
     def test_validation_multiple_files(
         self,

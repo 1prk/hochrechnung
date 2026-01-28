@@ -60,19 +60,14 @@ class CityCentroidSchema(pa.DataFrameModel):
     Schema for city/town centroid data from OSM.
 
     Used for calculating distance-to-center features.
-    Note: OSM data uses 'osm_id' and 'osm_type' columns.
+    Only requires name and place columns.
     """
 
-    osm_id: Series[int] = pa.Field(
-        description="OSM identifier",
-    )
-    osm_type: Series[str] | None = pa.Field(
-        nullable=True,
-        description="OSM type (node/way/relation)",
-    )
-    name: Series[str] | None = pa.Field(
-        nullable=True,
+    name: Series[str] = pa.Field(
         description="Place name",
+    )
+    place: Series[str] = pa.Field(
+        description="Place type (city, town, village, etc.)",
     )
 
     class Config:
@@ -80,4 +75,31 @@ class CityCentroidSchema(pa.DataFrameModel):
 
         name = "CityCentroidSchema"
         strict = False  # Allow extra OSM columns and geometry
+        coerce = True
+
+
+class GebietseinheitenSchema(pa.DataFrameModel):
+    """
+    Schema for DE_Gebietseinheiten administrative boundary data.
+
+    Contains administrative units at different levels (Land, Kreis, Verwaltungsgemeinschaft)
+    with 12-digit ARS codes where trailing digits are padded with zeros.
+    """
+
+    ars: Series[str] = pa.Field(
+        description="Amtlicher Regionalschlüssel (12-digit code with trailing zeros)",
+        str_length={"min_value": 12, "max_value": 12},
+    )
+    admin_level: Series[str] = pa.Field(
+        description="Administrative level (Land, Kreis, Verwaltungsgemeinschaft)",
+    )
+    name: Series[str] = pa.Field(
+        description="Name of the administrative unit",
+    )
+
+    class Config:
+        """Schema configuration."""
+
+        name = "GebietseinheitenSchema"
+        strict = False  # Allow extra columns and geometry
         coerce = True

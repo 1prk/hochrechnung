@@ -75,3 +75,56 @@ class DemographicsSchema(pa.DataFrameModel):
         name = "DemographicsSchema"
         strict = False
         coerce = True
+
+
+class CommuneStatisticsSchema(pa.DataFrameModel):
+    """
+    Schema for STADTRADELN commune statistics JSON files.
+
+    Contains per-municipality aggregated trip statistics including
+    distributions for speed, duration, distance, time of day, etc.
+    File format: SRxx_Commune_Statistics.json
+    """
+
+    ars: Series[str] = pa.Field(
+        description="Amtlicher Regionalschlüssel (12-digit municipality code)",
+    )
+    name: Series[str] = pa.Field(
+        nullable=True,
+        description="Municipality name",
+    )
+    users_n: Series[int] = pa.Field(
+        ge=0,
+        description="Number of STADTRADELN participants",
+    )
+    trips_n: Series[int] = pa.Field(
+        ge=0,
+        description="Number of recorded trips",
+    )
+    distance_km: Series[float] = pa.Field(
+        ge=0.0,
+        description="Total distance cycled in km",
+    )
+    avg_distance_km: Series[float] = pa.Field(
+        ge=0.0,
+        description="Average trip distance in km",
+    )
+    median_distance_km: Series[float] = pa.Field(
+        ge=0.0,
+        description="Median trip distance in km",
+    )
+    average_speed: Series[float] = pa.Field(
+        ge=0.0,
+        description="Average cycling speed in km/h",
+    )
+    average_duration: Series[float] = pa.Field(
+        ge=0.0,
+        description="Average trip duration in minutes",
+    )
+
+    class Config:
+        """Schema configuration."""
+
+        name = "CommuneStatisticsSchema"
+        strict = False  # Allow distribution columns (trip_distance_dist, etc.)
+        coerce = True
