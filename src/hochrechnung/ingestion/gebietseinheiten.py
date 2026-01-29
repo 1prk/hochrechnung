@@ -145,10 +145,13 @@ class GebietseinheitenLoader(GeoDataLoader[GebietseinheitenSchema]):
                 )
 
         # Filter by federal state (Land) using first 2 digits of ARS
+        # land_code="00" means all Germany, so skip filtering
         land_code = self.config.land_code
-        if "ars" in gdf.columns:
+        if "ars" in gdf.columns and land_code != "00":
             gdf = gdf[gdf["ars"].str.startswith(land_code)]
             log.info("Filtered to region", land_code=land_code, rows=len(gdf))
+        elif land_code == "00":
+            log.info("Loading all Gebietseinheiten (nationwide)", rows=len(gdf))
 
         # Select essential columns
         keep_cols = ["ars", "admin_level", "name", "geometry"]

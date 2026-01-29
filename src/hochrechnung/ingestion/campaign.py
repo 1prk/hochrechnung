@@ -254,6 +254,11 @@ class DemographicsLoader(GeoDataLoader[DemographicsSchema]):
 
         ars_prefix = ars_str[:prefix_len]
 
+        # land_code="00" means all Germany, so skip filtering
+        if ars_prefix == "00":
+            log.info("Loading all demographics (nationwide)", rows=len(df))
+            return df
+
         # Filter to matching municipalities (keep individual statistics)
         mask = df[ars_col].str.startswith(ars_prefix)
         filtered = df[mask].copy()
@@ -434,7 +439,8 @@ class AggregatedStatisticsLoader(DataLoader[DemographicsSchema]):
         kreisfreie_prefixes = set()
         for _, row in kreis_gdf.iterrows():
             kreis_ars = row["ars"]
-            if kreis_ars.startswith(land_code):
+            # land_code="00" means all Germany, so include all kreise
+            if land_code == "00" or kreis_ars.startswith(land_code):
                 kreis_prefix = kreis_ars[:5]
                 if kreis_prefix not in vg_kreis_prefixes:
                     kreisfreie_prefixes.add(kreis_prefix)

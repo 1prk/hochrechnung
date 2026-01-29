@@ -133,11 +133,6 @@ class TrafficVolumeSchema(pa.DataFrameModel):
         ge=0,
         description="Total bicycle count during campaign",
     )
-    bicycle_infrastructure: Series[str] = pa.Field(
-        isin=VALID_INFRA_CATEGORIES,
-        nullable=True,
-        description="Classified bicycle infrastructure type",
-    )
 
     class Config:
         """Schema configuration."""
@@ -185,11 +180,6 @@ class TrafficVolumeExtendedSchema(pa.DataFrameModel):
         nullable=True,
         description="Average speed in km/h against geometry direction",
     )
-    bicycle_infrastructure: Series[str] = pa.Field(
-        isin=VALID_INFRA_CATEGORIES,
-        nullable=True,
-        description="Classified bicycle infrastructure type",
-    )
 
     class Config:
         """Schema configuration."""
@@ -217,10 +207,6 @@ class TrafficVolumeRawSchema(pa.DataFrameModel):
     count: Series[int] = pa.Field(
         ge=0,
         description="Total bicycle count (or 'Verkehrsmenge' in German)",
-    )
-    bicycle_infrastructure: Series[str] = pa.Field(
-        nullable=True,
-        description="Raw OSM bicycle infrastructure classification",
     )
 
     class Config:

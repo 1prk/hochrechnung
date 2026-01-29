@@ -103,11 +103,20 @@ class CounterMeasurementLoader(DataLoader[CounterMeasurementSchema]):
         sample_date = df[timestamp_col].astype(str).iloc[0] if len(df) > 0 else ""
 
         if sample_date and sample_date[0].isdigit():
-            # ISO format detected (starts with digit like "2024-...")
-            df[timestamp_col] = pd.to_datetime(
-                df[timestamp_col], format="%Y-%m-%d %H:%M:%S", errors="coerce"
-            )
-            log.debug("Parsed dates using ISO format")
+            # Numeric format detected - could be ISO (YYYY-MM-DD) or European (DD-MM-YYYY)
+            # Check if it starts with a 4-digit year
+            if sample_date[:4].isdigit() and len(sample_date) >= 10 and sample_date[4] == "-":
+                # ISO format: "2024-05-01 00:00:00"
+                df[timestamp_col] = pd.to_datetime(
+                    df[timestamp_col], format="%Y-%m-%d %H:%M:%S", errors="coerce"
+                )
+                log.debug("Parsed dates using ISO format")
+            else:
+                # European format: "01-05-2022 00:00:00" (DD-MM-YYYY)
+                df[timestamp_col] = pd.to_datetime(
+                    df[timestamp_col], format="%d-%m-%Y %H:%M:%S", errors="coerce"
+                )
+                log.debug("Parsed dates using European format (DD-MM-YYYY)")
         else:
             # German format: "Mo. 1. Mai 2023"
             german_months = {

@@ -1,0 +1,30 @@
+# Configuration for Hessen
+
+# Project identifier (drives MLflow experiment + output paths)
+project: germany-2023
+
+# 12-digit ARS for Landkreis Darmstadt-Dieburg
+ars: "000000000000"
+region_name: "Deutschland"
+
+# Analysis year
+year: 2023
+
+# Analysis period
+period:
+  start: "2023-05-01"
+  end: "2023-09-30"
+
+# Data paths - only traffic_volumes required for prediction
+data:
+  traffic_volumes: "trafficvolumes/SR23_DE_VM.fgb"
+  osm_pbf: "osm-data/germany-230101.osm.pbf"
+  gebietseinheiten: "structural-data/DE_Gebietseinheiten.gpkg"
+  kommunen_stats: "kommunen-stats/SR23_Commune_Statistics.json"
+
+# Statistics approach configuration
+# approach: legacy (default) uses kommunen_stats shapefiles + VG250
+# approach: gebietseinheiten uses DE_Gebietseinheiten + aggregated JSON
+stats:
+  approach: gebietseinheiten
+  admin_level: Verwaltungsgemeinschaft

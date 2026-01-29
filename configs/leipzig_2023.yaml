@@ -1,0 +1,13 @@
+project: leipzig-2025
+
+ars: "147130000000"
+region_name: "Leipzig"
+
+year: 2023
+
+period:
+  start: "2023-05-01"
+  end: "2023-09-30"
+
+data:
+  traffic_volumes: "/mnt/c/Users/Porojkow/Documents/Projekte/VV01_Hessen/hochrechnung/data/trafficvolumes/SR23_Leipzig_VM.gpkg"

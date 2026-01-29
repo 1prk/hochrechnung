@@ -85,10 +85,10 @@ PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
         "regressor__model__min_samples_leaf": [16, 32, 64],
     },
     "SVR": {
-        "regressor__model__C": [1, 2], #3, 4 
-        "regressor__model__gamma": ["auto", "scale", 0.1, 0.01, 0.001],
-        "regressor__model__epsilon": [10, 1, 0.1, 0.01, 0.001],
-        "regressor__model__kernel": ["poly", "rbf", "sigmoid"],
+        "regressor__model__C": [1, 2],
+        "regressor__model__gamma": ["auto", 0.1],
+        "regressor__model__epsilon": [0.1, 0.01],
+        "regressor__model__kernel": ["rbf"],
     },
     "Support Vector Machine": {  # Legacy name
         "regressor__model__C": [0.1, 1.0, 10.0],

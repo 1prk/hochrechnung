@@ -86,14 +86,14 @@ class GebietseinheitenSchema(pa.DataFrameModel):
     with 12-digit ARS codes where trailing digits are padded with zeros.
     """
 
-    ars: Series[str] = pa.Field(
+    ARS: Series[str] = pa.Field(
         description="Amtlicher Regionalschlüssel (12-digit code with trailing zeros)",
         str_length={"min_value": 12, "max_value": 12},
     )
-    admin_level: Series[str] = pa.Field(
+    Type: Series[str] = pa.Field(
         description="Administrative level (Land, Kreis, Verwaltungsgemeinschaft)",
     )
-    name: Series[str] = pa.Field(
+    Name: Series[str] = pa.Field(
         description="Name of the administrative unit",
     )
 

@@ -47,10 +47,13 @@ class MunicipalityLoader(GeoDataLoader[MunicipalitySchema]):
         gdf = gpd.read_file(path, layer="v_vg250_gem")
 
         # Filter by federal state (Land) using first 2 digits of ARS
+        # land_code="00" means all Germany, so skip filtering
         land_code = self.config.land_code
-        gdf = gdf[gdf["Land"] == land_code]
-
-        log.info("Filtered to region", land_code=land_code, rows=len(gdf))
+        if land_code != "00":
+            gdf = gdf[gdf["Land"] == land_code]
+            log.info("Filtered to region", land_code=land_code, rows=len(gdf))
+        else:
+            log.info("Loading all municipalities (nationwide)", rows=len(gdf))
 
         # Normalize column names
         column_mapping = {
