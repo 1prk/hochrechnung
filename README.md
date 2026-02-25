@@ -19,49 +19,96 @@ uv run pre-commit install
 
 ### Running the Pipeline
 
+The standard workflow uses `configs/germany_2025.yaml`. Each step below builds on the previous one.
+
 #### 1. Validate Data Schemas
 
 ```bash
-uv run hochrechnung validate --config configs/hessen_2023.yaml
+uv run hochrechnung validate --config configs/germany_2025.yaml
 ```
+
+Checks that all required files exist and schemas are valid.
 
 #### 2. Run ETL Pipeline
 
 ```bash
-uv run hochrechnung etl --config configs/hessen_2023.yaml
+uv run hochrechnung etl --config configs/germany_2025.yaml
 ```
 
-Outputs: `cache/training_data_2023.csv`
+Outputs: `cache/training_data_2025.csv`
 
-#### 3. Assess ETL Output Quality
+Two modes are available:
+- `--mode production` (default) - uses verified counters
+- `--mode verification` - creates verification data and flags outliers
+
+#### 3. Verify Counters (optional)
 
 ```bash
-# Automatically loads cache/training_data_2023.csv (no need to re-run ETL!)
-uv run hochrechnung assess --config configs/hessen_2023.yaml
+uv run hochrechnung verify --config configs/germany_2025.yaml
 ```
 
-**Smart Assessment**:
-- ✅ If `data/validation/hessen_dauerzählstellen_2023_osmid.csv` exists: **Fast comparison** (just 2 CSVs)
-- 🔄 If no reference: Full validation (reloads all source data)
+Runs the verification workflow:
+1. Runs ETL in verification mode
+2. Generates MBTiles for map visualization
+3. Exports verification data
+4. Launches interactive web UI for manual counter verification
 
-Compares ETL output with reference data:
-- All common columns matched by counter `id`
-- Numeric values (tolerance: rtol=1e-5)
-- String values (trimmed comparison)
+Verified counters are saved to `data/verified/counters_verified_{year}.csv`.
 
-**Exit codes**:
-- `0` - Assessment passed (≥95% match)
-- `1` - Assessment failed (<80% match)
-
-#### 4. Train Models (TODO)
+#### 4. Assess ETL Output Quality
 
 ```bash
-# Start MLflow server
+uv run hochrechnung assess --config configs/germany_2025.yaml
+```
+
+Automatically loads `cache/training_data_2025.csv` (no need to re-run ETL).
+
+**Exit codes**: `0` = passed, `1` = failed
+
+#### 5. Train Models
+
+```bash
+# Start MLflow server (in separate terminal)
 uv run mlflow server --host 127.0.0.1 --port 5000
 
-# Run training
-uv run hochrechnung train --config configs/hessen_2023.yaml
+# Train using ETL output
+uv run hochrechnung train --config configs/germany_2025.yaml
+
+# Or train using curated Germany-wide counter data
+uv run hochrechnung train --config configs/germany_2025.yaml \
+  --curated --year 2025
 ```
+
+Trains both baseline (single predictor) and enhanced (all features) model variants.
+Models are saved to `cache/models/`.
+
+#### 6. Generate Predictions
+
+```bash
+uv run hochrechnung predict \
+  --config configs/germany_2025.yaml \
+  --model cache/models/random_forest_enhanced_2025.joblib \
+  --output predictions/germany_2025
+```
+
+Output formats: `fgb` (default), `gpkg`, `parquet`, `csv`.
+
+#### 7. Calibrate Predictions
+
+```bash
+uv run hochrechnung calibrate \
+  --config configs/germany_2025.yaml \
+  --model cache/models/random_forest_curated_2025.joblib \
+  --calibrator log_linear
+```
+
+Calibrator types: `global_multiplicative`, `log_linear`, `stratified`.
+
+Options:
+- `--verify` - launch verification UI for calibration stations before calibrating
+- `--no-loocv` - skip Leave-One-Out Cross-Validation
+
+Calibrated predictions are saved to `predictions/`.
 
 ## Project Structure
 
@@ -75,25 +122,63 @@ hochrechnung/
 │   ├── targets/         # DTV calculation
 │   ├── etl/             # ETL pipeline orchestration
 │   ├── assessment/      # ETL output validation
+│   ├── validation/      # Schema validation runner
+│   ├── verification/    # Counter verification UI + tiles
+│   ├── modeling/        # Training, inference, curated data
+│   ├── evaluation/      # Experiment tracking, metrics, reports
+│   ├── calibration/     # Post-prediction calibration
 │   ├── config/          # Configuration system
 │   └── utils/           # Logging, caching
 ├── configs/             # Region/year YAML configs
 ├── tests/               # Test suite
 ├── data/                # Data files (not in git)
 │   ├── counts/          # Counter measurements
-│   ├── counter-locations/  # Counter locations
+│   ├── counter-locations/  # Counter locations + images DB
 │   ├── trafficvolumes/  # STADTRADELN GPS volumes
 │   ├── osm-data/        # OSM infrastructure
-│   ├── structural-data/ # VG250, RegioStaR
-│   └── validation/      # Reference data
-└── cache/               # Cached ETL outputs
+│   ├── structural-data/ # Gebietseinheiten, city centroids
+│   ├── kommunen-stats/  # Commune statistics JSON
+│   ├── campaign/        # Campaign data
+│   ├── validation/      # Reference data
+│   └── verified/        # Verified counter datasets
+├── predictions/         # Prediction outputs (.fgb, diagnostics)
+└── cache/               # Cached ETL outputs + trained models
 ```
 
-## Key Files
+## Configuration
 
-- **configs/hessen_2023.yaml** - Configuration for Hessen 2023
-- **data/validation/hessen_dauerzählstellen_2023_osmid.csv** - Legacy reference for assessment
-- **cache/training_data_2023.csv** - ETL output (training-ready dataset)
+Each region/year has its own config file (e.g., `configs/germany_2025.yaml`):
+
+```yaml
+project: germany-2025
+
+ars: "000000000000"
+region_name: "Deutschland"
+
+year: 2025
+
+period:
+  start: "2025-05-01"
+  end: "2025-09-30"
+
+data:
+  traffic_volumes: "trafficvolumes/SR25_DE_VM.fgb"
+  osm_pbf: "osm-data/germany-250101.osm.pbf"
+  city_centroids: "structural-data/places.gpkg"
+  counter_locations: "counter-locations/germany_dzs_2025_gesamt.csv"
+  gebietseinheiten: "structural-data/DE_Gebietseinheiten.gpkg"
+  images_db: "counter-locations/germany_dzs.db"
+  kommunen_stats: "kommunen-stats/SR25_Commune_Statistics.json"
+
+training:
+  deduplicate_edges: true
+  min_volume_ratio: 0.27
+  max_volume_ratio: 9.81
+
+stats:
+  approach: gebietseinheiten
+  admin_level: Verwaltungsgemeinschaft
+```
 
 ## Development
 
@@ -132,53 +217,37 @@ uv run pytest tests/test_assessment.py
 
 - Python 3.11+
 - uv package manager
-- 16GB RAM (for full Hessen processing)
+- 16GB RAM (for full Germany processing)
 - 50GB disk space (for data + cache)
 
 ## Data Pipeline Overview
 
 ```
 Counter Data + Traffic Volumes + Structural Data
-                    ↓
-            [ETL Pipeline]
-         - Load & validate schemas
-         - Calculate DTV from measurements
-         - Match counters to OSM edges
-         - Join structural data
-         - Compute derived features
-                    ↓
-         training_data.csv
-                    ↓
-           [Assessment]
-     Compare with source data
-                    ↓
-          [ML Training]
-    Train regression models for DTV
-
+                    |
+             [ETL Pipeline]
+          - Load & validate schemas
+          - Calculate DTV from measurements
+          - Match counters to OSM edges
+          - Join structural data
+          - Compute derived features
+                    |
+          training_data.csv
+                    |
+          [Verify] (optional)
+     Flag outliers, manual review
+                    |
+            [Assessment]
+      Compare with source data
+                    |
+           [ML Training]
+     Train regression models for DTV
+      (baseline + enhanced variants)
+                    |
+           [Prediction]
+     Generate DTV for all OSM edges
+                    |
+          [Calibration]
+  Adjust predictions using independent
+         counting stations
 ```
-
-## Configuration
-
-Each region/year has its own config file (e.g., `configs/hessen_2023.yaml`):
-
-```yaml
-region:
-  code: "06"
-  name: "Hessen"
-  bbox: [7.77, 49.39, 10.24, 51.66]
-
-temporal:
-  year: 2023
-  campaign_start: "2023-05-01"
-  campaign_end: "2023-09-30"
-
-data_paths:
-  counter_measurements: "counts/DZS_counts_ecovisio_2023.csv"
-  traffic_volumes: "trafficvolumes/SR23_Hessen_VM.fgb"
-  osm_pbf: "osm-data/hessen-230101.osm.pbf"
-  # ... more paths
-```
-
-## License
-
-Internal project - Technische Universität Darmstadt
