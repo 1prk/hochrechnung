@@ -842,6 +842,84 @@ class PredictionPipeline:
         )
         log.info("Cached prediction feature data")
 
+    def predict_at_locations(
+        self,
+        locations: pd.DataFrame,
+        model: Any,
+        *,
+        feature_names: list[str] | None = None,
+        max_distance_m: float = 100.0,
+    ) -> np.ndarray:
+        """
+        Make predictions at specific geographic locations.
+
+        Used for calibration: finds the nearest traffic edge for each
+        calibration station and returns the model's prediction.
+
+        Args:
+            locations: DataFrame with 'latitude' and 'longitude' columns.
+            model: Trained model (sklearn pipeline).
+            feature_names: Feature names model was trained with.
+            max_distance_m: Maximum distance in meters to match (default 100m).
+
+        Returns:
+            Array of predictions for each location.
+        """
+        import geopandas as gpd
+        from shapely import Point
+
+        log.info("Predicting at specific locations", n_locations=len(locations))
+
+        # First run the full prediction pipeline to get predictions for all edges
+        result = self.run(model, feature_names=feature_names)
+
+        # Handle different column naming conventions for coordinates
+        lon_col = "longitude" if "longitude" in locations.columns else "lon"
+        lat_col = "latitude" if "latitude" in locations.columns else "lat"
+
+        # Create GeoDataFrame from calibration locations
+        points = [
+            Point(lon, lat)
+            for lon, lat in zip(locations[lon_col], locations[lat_col])
+        ]
+        locations_gdf = gpd.GeoDataFrame(
+            locations,
+            geometry=points,
+            crs="EPSG:4326",
+        )
+
+        # Project to metric CRS for distance calculation
+        predictions_gdf = result.predictions.to_crs("EPSG:25832")
+        locations_gdf = locations_gdf.to_crs("EPSG:25832")
+
+        # For each location, find nearest edge and get its prediction
+        predictions = []
+        for idx, location in locations_gdf.iterrows():
+            # Calculate distances to all edges
+            distances = predictions_gdf.geometry.distance(location.geometry)
+            min_idx = distances.idxmin()
+            min_dist = distances[min_idx]
+
+            if min_dist <= max_distance_m:
+                pred = predictions_gdf.loc[min_idx, "predicted_dtv"]
+            else:
+                log.warning(
+                    "No edge within max distance",
+                    location_id=locations.loc[idx, "id"] if "id" in locations.columns else idx,
+                    min_distance_m=min_dist,
+                )
+                pred = np.nan
+
+            predictions.append(pred)
+
+        log.info(
+            "Completed location predictions",
+            n_matched=sum(1 for p in predictions if not np.isnan(p)),
+            n_missing=sum(1 for p in predictions if np.isnan(p)),
+        )
+
+        return np.array(predictions)
+
     def _prepare_features(
         self,
         df: pd.DataFrame,
@@ -883,7 +961,7 @@ class PredictionPipeline:
             "infra_category",
             "participation_rate",
             "route_intensity",
-            "regiostar5",
+            "regiostar7",
             "stadtradeln_volume",
             "dist_to_center_m",
         ]

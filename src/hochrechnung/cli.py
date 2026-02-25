@@ -373,10 +373,18 @@ def train(
             console.print(f"[red]Training failed for {variant.value}: {e}[/red]")
             raise typer.Exit(code=1) from e
 
-        # Evaluate on test set
-        console.print(
-            f"\n[blue]Evaluating {variant.value} models on test set...[/blue]"
-        )
+        has_test_set = len(training_data.X_test) > 0
+
+        # Display results
+        if has_test_set:
+            console.print(
+                f"\n[blue]Evaluating {variant.value} models on test set...[/blue]"
+            )
+        else:
+            console.print(
+                f"\n[blue]{variant.value.capitalize()} model CV results (no holdout)[/blue]"
+            )
+
         results_table = Table(title=f"{variant.value.capitalize()} Model Results")
         results_table.add_column("Model", style="cyan")
         results_table.add_column("R² CV", style="green")
@@ -390,14 +398,16 @@ def train(
 
         test_results: dict[str, dict[str, float]] = {}
         for name, trained_model in trained_models.items():
-            y_pred = trained_model.pipeline.predict(training_data.X_test)
-            metrics = compute_metrics(training_data.y_test.values, y_pred)
-
-            # Merge test metrics with CV scores from training
-            test_results[name] = {
-                **metrics.to_dict(),
-                **trained_model.cv_scores,
-            }
+            if has_test_set:
+                y_pred = trained_model.pipeline.predict(training_data.X_test)
+                metrics = compute_metrics(training_data.y_test.values, y_pred)
+                test_results[name] = {
+                    **metrics.to_dict(),
+                    **trained_model.cv_scores,
+                }
+            else:
+                # CV-only: use CV scores directly
+                test_results[name] = {**trained_model.cv_scores}
 
             # Store for cross-variant comparison
             variant_key = f"{variant.value}_{name}"
@@ -438,9 +448,13 @@ def train(
             f"\n[blue]Saving {variant.value} prediction tables to {predictions_dir}[/blue]"
         )
         for name, trained_model in trained_models.items():
-            # Get train and test predictions
+            # Get train predictions (always available)
             y_train_pred = trained_model.pipeline.predict(training_data.X_train)
-            y_test_pred = trained_model.pipeline.predict(training_data.X_test)
+
+            if has_test_set:
+                y_test_pred = trained_model.pipeline.predict(training_data.X_test)
+            else:
+                y_test_pred = np.array([])
 
             train_path, test_path = save_prediction_tables(
                 model_name=name,
@@ -609,8 +623,14 @@ def _train_curated_models(
         console.print(f"[red]Training failed: {e}[/red]")
         raise typer.Exit(code=1) from e
 
-    # Evaluate on test set
-    console.print("\n[blue]Evaluating models on test set...[/blue]")
+    # Evaluate models
+    has_test_set = len(curated_data.X_test) > 0
+
+    if has_test_set:
+        console.print("\n[blue]Evaluating models on test set...[/blue]")
+    else:
+        console.print("\n[blue]Curated model CV results (no holdout)[/blue]")
+
     results_table = Table(title="Curated Model Results")
     results_table.add_column("Model", style="cyan")
     results_table.add_column("R² CV", style="green")
@@ -625,20 +645,25 @@ def _train_curated_models(
     best_model_key = ""
 
     for name, trained_model in trained_models.items():
-        # Predict on test set
-        y_pred = trained_model.pipeline.predict(curated_data.X_test)
-
-        # Compute metrics
         import numpy as np
 
-        metrics = compute_metrics(
-            np.array(curated_data.y_test),
-            np.array(y_pred),
-        )
+        if has_test_set:
+            # Predict on test set
+            y_pred = trained_model.pipeline.predict(curated_data.X_test)
 
-        # Add CV metrics from training - convert to dict first
-        metrics_dict = metrics.to_dict()
-        metrics_dict.update(trained_model.cv_scores)
+            # Compute metrics
+            metrics = compute_metrics(
+                np.array(curated_data.y_test),
+                np.array(y_pred),
+            )
+
+            # Add CV metrics from training - convert to dict first
+            metrics_dict = metrics.to_dict()
+            metrics_dict.update(trained_model.cv_scores)
+        else:
+            # CV-only: use CV scores directly
+            metrics_dict = {**trained_model.cv_scores}
+
         test_results[name] = metrics_dict
 
         # Color-code overfitting gap
@@ -655,8 +680,8 @@ def _train_curated_models(
             f"{metrics_dict.get('r2_cv', metrics_dict.get('r2', 0)):.4f}",
             f"{metrics_dict.get('r2_no_cv', metrics_dict.get('r2', 0)):.4f}",
             f"{gap_style}{r2_gap:.3f}[/]",
-            f"{metrics_dict['rmse']:.1f}",
-            f"{metrics_dict['mae']:.1f}",
+            f"{metrics_dict.get('rmse', 0):.1f}",
+            f"{metrics_dict.get('mae', 0):.1f}",
             f"{metrics_dict.get('sqv', 0):.4f}",
         )
 
@@ -678,9 +703,13 @@ def _train_curated_models(
     predictions_dir = output / "predictions"
     console.print(f"\n[blue]Saving prediction tables to {predictions_dir}[/blue]")
     for name, trained_model in trained_models.items():
-        # Get train and test predictions
+        # Get train predictions (always available)
         y_train_pred = trained_model.pipeline.predict(curated_data.X_train)
-        y_test_pred = trained_model.pipeline.predict(curated_data.X_test)
+
+        if has_test_set:
+            y_test_pred = trained_model.pipeline.predict(curated_data.X_test)
+        else:
+            y_test_pred = np.array([])
 
         train_path, test_path = save_prediction_tables(
             model_name=name,
@@ -767,9 +796,9 @@ def _train_curated_models(
     try:
         report_data = create_report_data(
             curated_data.X_train,
-            curated_data.X_test,
+            curated_data.X_test if has_test_set else curated_data.X_train,
             curated_data.y_train,
-            curated_data.y_test,
+            curated_data.y_test if has_test_set else curated_data.y_train,
             trained_models,
             curated_data.year,
         )
@@ -890,6 +919,511 @@ def predict(
     except Exception as e:
         console.print(f"[red]Prediction failed: {e}[/red]")
         raise typer.Exit(code=1) from e
+
+
+@app.command()
+def calibrate(
+    config: Annotated[
+        Path,
+        typer.Option(
+            "--config",
+            "-c",
+            help="Path to configuration YAML file.",
+            exists=True,
+            dir_okay=False,
+        ),
+    ],
+    model: Annotated[
+        str,
+        typer.Option(
+            "--model",
+            "-m",
+            help="Path to trained model (.joblib) or MLflow URI.",
+        ),
+    ],
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Output path for calibrator (default: alongside model).",
+        ),
+    ] = None,
+    calibrator_type: Annotated[
+        str,
+        typer.Option(
+            "--calibrator",
+            help="Calibrator type: global_multiplicative, log_linear, stratified.",
+        ),
+    ] = "log_linear",
+    no_loocv: Annotated[
+        bool,
+        typer.Option(
+            "--no-loocv",
+            help="Skip Leave-One-Out Cross-Validation.",
+        ),
+    ] = False,
+    verify: Annotated[
+        bool,
+        typer.Option(
+            "--verify",
+            help="Launch verification UI before calibration.",
+        ),
+    ] = False,
+    verify_port: Annotated[
+        int,
+        typer.Option(
+            "--verify-port",
+            help="HTTP port for verification UI.",
+        ),
+    ] = 8000,
+) -> None:
+    """
+    Calibrate model predictions using independent counting stations.
+
+    Requires calibration.counter_locations in config YAML pointing to
+    verified calibration station CSV with pre-calculated DTV values.
+
+    Example:
+        uv run hochrechnung calibrate \\
+            --config configs/hessen_2023.yaml \\
+            --model output/hessen-2023/models/xgboost_curated_2023.joblib \\
+            --calibrator log_linear
+    """
+    from hochrechnung.calibration import (
+        CalibratorType,
+        calibrate_and_evaluate,
+        create_calibrator,
+        save_calibrator,
+    )
+    from hochrechnung.calibration.loader import load_verified_calibration_counters
+    from hochrechnung.config.loader import load_config
+    from hochrechnung.modeling.inference import load_model
+
+    console.print(f"[blue]Loading configuration from {config}[/blue]")
+    pipeline_config = load_config(config)
+
+    # Validate calibration config
+    if pipeline_config.calibration.counter_locations is None:
+        console.print(
+            "[red]Error: calibration.counter_locations not set in config[/red]"
+        )
+        console.print(
+            "[dim]Add to config YAML:[/dim]\n"
+            "[dim]calibration:[/dim]\n"
+            "[dim]  counter_locations: 'path/to/calibration_counters.csv'[/dim]"
+        )
+        raise typer.Exit(code=1)
+
+    # Load model
+    console.print(f"[blue]Loading model from {model}[/blue]")
+    try:
+        loaded_model = load_model(model)
+    except FileNotFoundError as e:
+        console.print(f"[red]Model not found: {e}[/red]")
+        raise typer.Exit(code=1) from e
+    except Exception as e:
+        console.print(f"[red]Error loading model: {e}[/red]")
+        raise typer.Exit(code=1) from e
+
+    if loaded_model.feature_names:
+        console.print(
+            f"[dim]Model features: {', '.join(loaded_model.feature_names)}[/dim]"
+        )
+
+    # Handle --verify flag: run verification UI before calibration
+    if verify:
+        from hochrechnung.calibration import (
+            export_calibration_data,
+            flag_calibration_stations,
+            start_calibration_verification_server,
+        )
+        from hochrechnung.modeling.inference import PredictionPipeline
+
+        console.print("\n[bold]Running calibration station verification[/bold]")
+
+        # Load raw calibration data
+        cal_path = (
+            pipeline_config.data_paths.data_root
+            / pipeline_config.calibration.counter_locations
+        )
+        console.print(f"[dim]Loading raw calibration data from: {cal_path}[/dim]")
+
+        import pandas as pd
+
+        try:
+            try:
+                raw_stations = pd.read_csv(cal_path, sep=";")
+                if len(raw_stations.columns) == 1:
+                    raw_stations = pd.read_csv(cal_path, sep=",")
+            except Exception:
+                raw_stations = pd.read_csv(cal_path, sep=",")
+        except FileNotFoundError as e:
+            console.print(f"[red]Calibration data not found: {cal_path}[/red]")
+            raise typer.Exit(code=1) from e
+
+        console.print(f"[dim]Loaded {len(raw_stations)} raw calibration stations[/dim]")
+
+        # Detect DTV column
+        dtv_col_candidates = ["dtv", "DZS_mean_SR", "DZS_mean_year", "dtv_value", "DTV"]
+        dtv_column = None
+        for col in dtv_col_candidates:
+            if col in raw_stations.columns:
+                dtv_column = col
+                break
+        if dtv_column is None:
+            console.print(f"[red]No DTV column found. Expected: {dtv_col_candidates}[/red]")
+            raise typer.Exit(code=1)
+
+        # Detect ID column
+        id_col_candidates = ["id", "counter_id", "station_id", "DZS_id", "Zaehlst_id"]
+        id_column = None
+        for col in id_col_candidates:
+            if col in raw_stations.columns:
+                id_column = col
+                break
+        if id_column is None:
+            raw_stations = raw_stations.copy()
+            raw_stations["id"] = raw_stations.index.astype(str)
+            id_column = "id"
+
+        # Run predictions for calibration stations
+        console.print("[blue]Running predictions for calibration stations...[/blue]")
+        try:
+            pipeline = PredictionPipeline(pipeline_config)
+            predicted_dtv = pipeline.predict_at_locations(
+                raw_stations,
+                loaded_model.model,
+                feature_names=loaded_model.feature_names,
+            )
+            if hasattr(predicted_dtv, "values"):
+                predicted_dtv = pd.Series(predicted_dtv.values.ravel())
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not run predictions: {e}[/yellow]")
+            predicted_dtv = None
+
+        # Flag stations for issues
+        console.print("[blue]Flagging stations for issues...[/blue]")
+        flagged_stations = flag_calibration_stations(
+            raw_stations,
+            predicted_dtv=predicted_dtv,
+            dtv_column=dtv_column,
+        )
+
+        # Count flagged
+        n_flagged = len(flagged_stations[~flagged_stations["flag_severity"].isin(["ok", "verified"])])
+        console.print(f"[dim]Found {n_flagged} stations with potential issues[/dim]")
+
+        # Export to JSON
+        verification_dir = pipeline_config.cache_dir / "calibration_verification" / str(pipeline_config.year)
+        verification_dir.mkdir(parents=True, exist_ok=True)
+
+        region = pipeline_config.region.name or pipeline_config.project
+        verification_data_path = export_calibration_data(
+            flagged_stations,
+            verification_dir,
+            pipeline_config.year,
+            region,
+            dtv_column=dtv_column,
+            id_column=id_column,
+        )
+
+        console.print(f"[green]Exported verification data to: {verification_data_path}[/green]")
+
+        # Generate MBTiles with traffic volumes around calibration stations
+        console.print("[blue]Generating MBTiles for map visualization...[/blue]")
+        mbtiles_path = None
+        try:
+            import geopandas as gpd
+            from shapely.geometry import Point
+
+            from hochrechnung.ingestion.traffic import load_traffic_volumes
+            from hochrechnung.verification.tiles import generate_verification_mbtiles
+
+            # Load traffic volumes
+            traffic_gdf = load_traffic_volumes(pipeline_config, validate=False)
+
+            # Detect coordinate columns
+            lon_col = "longitude" if "longitude" in flagged_stations.columns else "lon"
+            lat_col = "latitude" if "latitude" in flagged_stations.columns else "lat"
+
+            # Create GeoDataFrame from calibration stations
+            stations_gdf = gpd.GeoDataFrame(
+                flagged_stations,
+                geometry=[
+                    Point(lon, lat)
+                    for lon, lat in zip(
+                        flagged_stations[lon_col], flagged_stations[lat_col]
+                    )
+                ],
+                crs="EPSG:4326",
+            )
+
+            # Add required columns for MBTiles generation
+            if "is_outlier" not in stations_gdf.columns:
+                stations_gdf["is_outlier"] = stations_gdf["flag_severity"] != "ok"
+            if "counter_id" not in stations_gdf.columns:
+                stations_gdf["counter_id"] = stations_gdf[id_column].astype(str)
+
+            mbtiles_path = verification_dir / "volumes.mbtiles"
+            generate_verification_mbtiles(
+                stations_gdf,
+                traffic_gdf,
+                mbtiles_path,
+                buffer_m=500.0,  # Larger buffer for calibration context
+                only_flagged=False,  # Include all stations
+            )
+            console.print(f"[green]Generated MBTiles: {mbtiles_path}[/green]")
+
+        except FileNotFoundError as e:
+            console.print(f"[yellow]Warning: Could not generate MBTiles: {e}[/yellow]")
+            console.print("[yellow]Map will show stations without traffic volume overlay[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: MBTiles generation failed: {e}[/yellow]")
+            console.print("[yellow]Map will show stations without traffic volume overlay[/yellow]")
+
+        # Start verification server
+        console.print("\n[bold]Launching verification UI[/bold]")
+        console.print("[dim]Verify calibration stations, then press Ctrl+C to continue[/dim]")
+
+        start_calibration_verification_server(
+            verification_data_path=verification_data_path,
+            mbtiles_path=mbtiles_path,
+            data_root=pipeline_config.data_paths.data_root,
+            year=pipeline_config.year,
+            region=region,
+            stations_df=flagged_stations,
+            dtv_column=dtv_column,
+            id_column=id_column,
+            port=verify_port,
+        )
+
+        console.print("\n[green]Verification complete. Continuing with calibration...[/green]")
+
+    # Load calibration stations
+    console.print("[blue]Loading calibration stations[/blue]")
+    try:
+        cal_stations = load_verified_calibration_counters(
+            pipeline_config.data_paths.data_root,
+            pipeline_config.region.name or pipeline_config.project,
+            pipeline_config.year,
+            must_exist=True,
+        )
+    except FileNotFoundError:
+        # Try loading from counter_locations path directly
+        cal_path = (
+            pipeline_config.data_paths.data_root
+            / pipeline_config.calibration.counter_locations
+        )
+        console.print(f"[dim]Loading from: {cal_path}[/dim]")
+
+        import pandas as pd
+
+        try:
+            # Try semicolon delimiter first (German CSV format), fall back to comma
+            try:
+                cal_stations = pd.read_csv(cal_path, sep=";")
+                # Verify we got multiple columns (if only 1, wrong delimiter)
+                if len(cal_stations.columns) == 1:
+                    cal_stations = pd.read_csv(cal_path, sep=",")
+            except Exception:
+                cal_stations = pd.read_csv(cal_path, sep=",")
+        except FileNotFoundError as e:
+            console.print(f"[red]Calibration data not found: {cal_path}[/red]")
+            raise typer.Exit(code=1) from e
+
+    if cal_stations is None or len(cal_stations) == 0:
+        console.print("[red]Error: No calibration stations found[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"[dim]Loaded {len(cal_stations)} calibration stations[/dim]")
+
+    # Run predictions for calibration stations
+    console.print("[blue]Running predictions for calibration stations[/blue]")
+
+    from hochrechnung.modeling.inference import PredictionPipeline
+
+    try:
+        pipeline = PredictionPipeline(pipeline_config)
+        station_predictions = pipeline.predict_at_locations(
+            cal_stations,
+            loaded_model.model,
+            feature_names=loaded_model.feature_names,
+        )
+    except Exception as e:
+        console.print(f"[red]Prediction failed: {e}[/red]")
+        raise typer.Exit(code=1) from e
+
+    # Handle case where prediction returns DataFrame
+    if hasattr(station_predictions, "values"):
+        station_predictions = station_predictions.values.ravel()
+
+    console.print(f"[dim]Generated {len(station_predictions)} predictions[/dim]")
+
+    # Create and fit calibrator
+    console.print(f"[blue]Fitting {calibrator_type} calibrator[/blue]")
+
+    # Get stratify_by from config if using stratified calibrator
+    stratify_by = pipeline_config.calibration.stratify_by
+
+    try:
+        calibrator = create_calibrator(
+            calibrator_type,
+            stratify_by=stratify_by,
+            min_stations_per_stratum=pipeline_config.calibration.min_stations_per_stratum,
+        )
+    except (ValueError, NotImplementedError) as e:
+        console.print(f"[red]Error creating calibrator: {e}[/red]")
+        raise typer.Exit(code=1) from e
+
+    # Prepare meta DataFrame for stratified calibrators
+    meta = None
+    if calibrator_type == "stratified" and stratify_by:
+        missing_cols = set(stratify_by) - set(cal_stations.columns)
+        if missing_cols:
+            console.print(
+                f"[red]Error: Calibration data missing columns for stratification: {missing_cols}[/red]"
+            )
+            raise typer.Exit(code=1)
+        meta = cal_stations[stratify_by]
+
+    # Resolve DTV column name (handle different naming conventions)
+    dtv_column_candidates = ["dtv", "DZS_mean_SR", "DZS_mean_year", "dtv_value", "DTV"]
+    dtv_column = None
+    for col in dtv_column_candidates:
+        if col in cal_stations.columns:
+            dtv_column = col
+            break
+    if dtv_column is None:
+        console.print(
+            f"[red]Error: No DTV column found in calibration data. "
+            f"Expected one of: {dtv_column_candidates}[/red]"
+        )
+        console.print(f"[dim]Available columns: {list(cal_stations.columns)[:20]}...[/dim]")
+        raise typer.Exit(code=1)
+    console.print(f"[dim]Using DTV column: {dtv_column}[/dim]")
+
+    # Run calibration and evaluation
+    try:
+        result = calibrate_and_evaluate(
+            calibrator,
+            y_pred=station_predictions,
+            y_true=cal_stations[dtv_column].values,
+            meta=meta,
+            run_loocv_validation=not no_loocv,
+        )
+    except Exception as e:
+        console.print(f"[red]Calibration failed: {e}[/red]")
+        raise typer.Exit(code=1) from e
+
+    # Display results table
+    table = Table(title="Calibration Results")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Uncalibrated", style="yellow")
+    table.add_column("Calibrated", style="green")
+    table.add_column("Improvement", style="magenta")
+
+    # Add metrics rows
+    metrics_to_show = [
+        ("mae", "MAE"),
+        ("rmse", "RMSE"),
+        ("r2", "R²"),
+        ("sqv", "SQV"),
+    ]
+
+    for metric_key, metric_name in metrics_to_show:
+        uncal = getattr(result.uncalibrated_metrics, metric_key)
+        cal = getattr(result.calibrated_metrics, metric_key)
+
+        if metric_key == "r2":
+            imp_val = result.improvement.get("r2_gain", 0)
+            imp_str = f"{imp_val:+.4f}"
+        elif metric_key == "sqv":
+            imp_val = result.improvement.get("sqv_gain", 0)
+            imp_str = f"{imp_val:+.4f}"
+        else:
+            imp_val = result.improvement.get(f"{metric_key}_reduction", 0)
+            imp_str = f"{imp_val * 100:+.1f}%"
+
+        table.add_row(metric_name, f"{uncal:.2f}", f"{cal:.2f}", imp_str)
+
+    console.print(table)
+
+    # LOOCV results
+    if result.loocv_metrics:
+        console.print(
+            f"\n[blue]LOOCV MAE:[/blue] "
+            f"{result.loocv_metrics.mae_mean:.2f} ± {result.loocv_metrics.mae_std:.2f}"
+        )
+        console.print(
+            f"[blue]LOOCV RMSE:[/blue] "
+            f"{result.loocv_metrics.rmse_mean:.2f} ± {result.loocv_metrics.rmse_std:.2f}"
+        )
+
+    # Save calibrator
+    if output is None:
+        output = Path(model).with_suffix("")
+
+    try:
+        cal_path, meta_path = save_calibrator(calibrator, output, result)
+        console.print(f"\n[green]Calibrator saved to: {cal_path}[/green]")
+        console.print(f"[green]Metadata saved to: {meta_path}[/green]")
+    except Exception as e:
+        console.print(f"[red]Error saving calibrator: {e}[/red]")
+        raise typer.Exit(code=1) from e
+
+    # Print calibration params
+    params = calibrator.get_params()
+    console.print(f"\n[blue]Calibration parameters ({params.calibrator_type}):[/blue]")
+    for k, v in params.params.items():
+        if isinstance(v, float):
+            console.print(f"  {k}: {v:.4f}")
+        elif isinstance(v, dict):
+            console.print(f"  {k}: {len(v)} items")
+        else:
+            console.print(f"  {k}: {v}")
+
+    # Run full prediction pipeline and apply calibration
+    console.print("\n[blue]Running predictions for all edges...[/blue]")
+    try:
+        pred_result = pipeline.run(
+            loaded_model.model,
+            feature_names=loaded_model.feature_names,
+        )
+        console.print(
+            f"[dim]Generated {pred_result.n_predictions} predictions[/dim]"
+        )
+
+        # Apply calibration to predictions
+        console.print("[blue]Applying calibration to predictions...[/blue]")
+        uncalibrated_dtv = pred_result.predictions["predicted_dtv"].values
+        calibrated_dtv = calibrator.predict(uncalibrated_dtv)
+
+        # Add calibrated predictions to output
+        pred_result.predictions["predicted_dtv_uncalibrated"] = uncalibrated_dtv
+        pred_result.predictions["predicted_dtv"] = calibrated_dtv
+
+        # Save to predictions folder
+        predictions_dir = pipeline_config.predictions_dir
+        predictions_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build output filename from model and calibrator
+        model_name = Path(model).stem
+        output_file = predictions_dir / f"{model_name}_calibrated_{pipeline_config.year}.fgb"
+
+        pred_result.predictions.to_file(output_file, driver="FlatGeobuf")
+        console.print(f"\n[green]Calibrated predictions saved to: {output_file}[/green]")
+
+        # Print prediction statistics
+        valid_preds = pred_result.predictions["predicted_dtv"].dropna()
+        console.print(f"[dim]  Mean DTV: {valid_preds.mean():.1f}[/dim]")
+        console.print(f"[dim]  Median DTV: {valid_preds.median():.1f}[/dim]")
+        console.print(
+            f"[dim]  Range: {valid_preds.min():.0f} - {valid_preds.max():.0f}[/dim]"
+        )
+
+    except Exception as e:
+        console.print(f"[yellow]Warning: Could not generate calibrated predictions: {e}[/yellow]")
 
 
 @app.command()
@@ -1064,6 +1598,19 @@ def verify(
     pipeline_config = load_config(config)
     year = pipeline_config.year
 
+    # Resolve images database path
+    images_db_path = None
+    if pipeline_config.data_paths.images_db is not None:
+        images_db_path = (
+            pipeline_config.data_paths.data_root
+            / pipeline_config.data_paths.images_db
+        )
+        if images_db_path.exists():
+            console.print(f"[dim]Images DB: {images_db_path}[/dim]")
+        else:
+            console.print(f"[yellow]Images DB not found: {images_db_path}[/yellow]")
+            images_db_path = None
+
     # Step 1: Run ETL in verification mode
     console.print("\n[bold]Step 1: Running ETL in verification mode[/bold]")
     result = run_etl(pipeline_config, mode="verification")
@@ -1153,6 +1700,7 @@ def verify(
         median_ratio=result.verification_data.get("dtv_volume_ratio").median()
         if "dtv_volume_ratio" in result.verification_data
         else 1.0,
+        images_db_path=images_db_path,
     )
 
     verification_data_path = verification_dir / "verification_data.json"
@@ -1188,6 +1736,8 @@ def verify(
         year,
         result.verification_data,
         port=port,
+        images_db_path=images_db_path,
+        project=pipeline_config.project,
     )
 
 

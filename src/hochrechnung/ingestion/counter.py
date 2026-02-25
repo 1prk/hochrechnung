@@ -33,12 +33,17 @@ class CounterLocationLoader(DataLoader[CounterLocationSchema]):
 
         log.info("Loading counter locations", path=str(path))
 
-        df = pd.read_csv(path)
+        # Auto-detect delimiter: try semicolon first, fall back to comma
+        df = pd.read_csv(path, sep=";")
+        if len(df.columns) == 1:
+            df = pd.read_csv(path, sep=",")
 
         # Normalize column names
         column_mapping = {
             "ID": "id",
+            "Counter_ID_orig": "id",
             "Name": "name",
+            "Counter_Name": "name",
             "name": "name",
             "latitude": "latitude",
             "Latitude": "latitude",
@@ -48,6 +53,7 @@ class CounterLocationLoader(DataLoader[CounterLocationSchema]):
             "lon": "longitude",
             "ARS": "ars",
             "ars": "ars",
+            "DZS_mean_SR": "dtv",
         }
 
         df = df.rename(

@@ -429,6 +429,9 @@ function selectCounter(counter) {
     // Render candidate edges if available
     renderCandidateEdges(counter);
 
+    // Load and render counter images
+    loadAndRenderImages(counter);
+
     // Fly to counter on map
     if (map && counter.longitude && counter.latitude) {
         map.flyTo({
@@ -587,6 +590,7 @@ async function saveCounter() {
 function cancelEdit() {
     selectedCounter = null;
     document.getElementById('counter-editor').style.display = 'none';
+    hideImagePanel();
     document.querySelectorAll('.counter-item').forEach(el => el.classList.remove('active'));
 }
 
@@ -833,6 +837,70 @@ function bearing(p1, p2) {
 
     let bearing = Math.atan2(x, y) * 180 / Math.PI;
     return (bearing + 360) % 360;
+}
+
+// Load and render counter location images in map overlay
+async function loadAndRenderImages(counter) {
+    const container = document.getElementById('counter-images');
+    if (!container) return;
+
+    const imageId = counter.original_id || counter.counter_id;
+
+    if (!counter.image_count || counter.image_count === 0) {
+        container.style.display = 'none';
+        return;
+    }
+
+    container.style.display = 'block';
+    container.innerHTML = '<div class="images-panel-header"><span class="images-panel-title">Laden...</span></div>';
+
+    try {
+        const response = await fetch(`/api/images/${imageId}`);
+        if (!response.ok) {
+            container.style.display = 'none';
+            return;
+        }
+
+        const images = await response.json();
+        if (images.length === 0) {
+            container.style.display = 'none';
+            return;
+        }
+
+        let html = '<div class="images-panel-header">';
+        html += `<span class="images-panel-title">Standortbilder (${images.length})</span>`;
+        html += '<button class="images-panel-close" onclick="hideImagePanel()" title="Schließen">&times;</button>';
+        html += '</div>';
+        html += '<div class="images-gallery">';
+        images.forEach(img => {
+            const url = `/api/images/${imageId}/${img.id}`;
+            html += `<img class="image-thumb" src="${url}" alt="${img.filename || ''}" onclick="openImageModal('${url}', '${(img.filename || '').replace(/'/g, "\\'")}')" loading="lazy">`;
+        });
+        html += '</div>';
+        container.innerHTML = html;
+
+    } catch (error) {
+        console.error('Failed to load images:', error);
+        container.style.display = 'none';
+    }
+}
+
+// Hide image panel
+function hideImagePanel() {
+    const container = document.getElementById('counter-images');
+    if (container) container.style.display = 'none';
+}
+
+// Open full-size image in modal overlay
+function openImageModal(url, filename) {
+    const modal = document.createElement('div');
+    modal.className = 'image-modal';
+    modal.innerHTML = `
+        <img src="${url}" alt="${filename}">
+        ${filename ? `<div class="image-modal-filename">${filename}</div>` : ''}
+    `;
+    modal.addEventListener('click', () => modal.remove());
+    document.body.appendChild(modal);
 }
 
 // Initialize on load

@@ -173,6 +173,10 @@ class DataPathsConfig(BaseModel):
         default=Path("structural-data/DE_Gebietseinheiten.gpkg"),
         description="Path to DE_Gebietseinheiten GPKG",
     )
+    images_db: Path | None = Field(
+        default=None,
+        description="Path to SQLite database with counter location images",
+    )
 
     def resolve(self, path_attr: str) -> Path:
         """Resolve a relative path against data_root."""
@@ -228,12 +232,28 @@ class TrainingConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    test_size: float = Field(default=0.2, ge=0.05, le=0.5)
+    test_size: float = Field(default=0.2, ge=0.0, le=0.5)
     cv_folds: int = Field(default=10, ge=2, le=20)  # Paper methodology (Section 3.5)
     random_state: int = Field(default=1337)
     min_dtv: int = Field(default=25, ge=0, description="Minimum DTV for training")
     max_dtv: int | None = Field(default=None, description="Maximum DTV for training")
     metrics: list[str] = Field(default_factory=lambda: ["r2", "rmse", "mae", "mape"])
+
+    # Data quality filters
+    deduplicate_edges: bool = Field(
+        default=False,
+        description="Deduplicate by OSM edge (base_id), keeping row with highest DTV",
+    )
+    min_volume_ratio: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Minimum DTV/stadtradeln_volume ratio (removes mismatched edges)",
+    )
+    max_volume_ratio: float | None = Field(
+        default=None,
+        ge=0.0,
+        description="Maximum DTV/stadtradeln_volume ratio (removes mismatched edges)",
+    )
 
 
 class ModelConfig(BaseModel):
@@ -288,6 +308,46 @@ class CuratedConfig(BaseModel):
     )
 
 
+class CalibratorType(str, Enum):
+    """Available calibrator types for post-prediction calibration."""
+
+    GLOBAL_MULTIPLICATIVE = "global_multiplicative"
+    LOG_LINEAR = "log_linear"
+    STRATIFIED = "stratified"
+    SPATIALLY_WEIGHTED = "spatially_weighted"
+
+
+class CalibrationConfig(BaseModel):
+    """Calibration configuration for transfer to new regions.
+
+    References:
+        - Richter et al. (2025): GPS data bias in cycling populations
+        - Kaiser et al. (2025): Sample count calibration halves error
+        - Camacho-Torregrosa et al. (2021): Strava Usage Rate (SUR)
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    counter_locations: Path | None = Field(
+        default=None,
+        description="Path to calibration counter CSV (relative to data_root)",
+    )
+    calibrator: CalibratorType = Field(
+        default=CalibratorType.LOG_LINEAR,
+        description="Calibrator type to use",
+    )
+    stratify_by: list[str] | None = Field(
+        default=None,
+        description="Columns for stratified calibration (e.g., ['infra_category'])",
+    )
+    min_stations_per_stratum: int = Field(
+        default=3,
+        ge=2,
+        description="Minimum stations per stratum before fallback to global",
+    )
+    random_state: int = Field(default=1337)
+
+
 class PipelineConfig(BaseModel):
     """Complete pipeline configuration.
 
@@ -312,6 +372,7 @@ class PipelineConfig(BaseModel):
     output: OutputConfig
     curated: CuratedConfig = Field(default_factory=CuratedConfig)
     stats: StatsConfig = Field(default_factory=StatsConfig)
+    calibration: CalibrationConfig = Field(default_factory=CalibrationConfig)
 
     @property
     def year(self) -> int:

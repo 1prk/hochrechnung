@@ -192,7 +192,8 @@ class ETLPipeline:
         # Try to load verified counters in production mode
         if self.mode == "production":
             verified_counters = load_verified_counters(
-                self.config.data_paths.data_root, self.config.year
+                self.config.data_paths.data_root, self.config.year,
+                project=self.config.project,
             )
 
             if verified_counters is not None:
@@ -365,21 +366,50 @@ class ETLPipeline:
         return dtv_df, counters_gdf, traffic_gdf, osm_infra
 
     def _load_and_compute_dtv(self) -> pd.DataFrame:
-        """Load counter measurements and compute DTV."""
-        measurements = load_counter_measurements(self.config, validate=True)
+        """Load counter measurements and compute DTV.
 
-        dtv_results = calculate_dtv(measurements, self.config.temporal)
-        valid_results = filter_dtv_by_quality(
-            dtv_results,
-            min_quality=0.5,
-            min_observations=7,
-        )
+        If counter_measurements is not configured, falls back to extracting
+        pre-computed DTV values from the counter locations CSV (e.g., DZS_mean_SR).
+        """
+        if self.config.data_paths.counter_measurements is not None:
+            measurements = load_counter_measurements(self.config, validate=True)
 
-        dtv_df = dtv_results_to_dataframe(valid_results)
+            dtv_results = calculate_dtv(measurements, self.config.temporal)
+            valid_results = filter_dtv_by_quality(
+                dtv_results,
+                min_quality=0.5,
+                min_observations=7,
+            )
+
+            dtv_df = dtv_results_to_dataframe(valid_results)
+            log.info(
+                "DTV computation complete",
+                valid_counters=len(valid_results),
+                total_counters=len(dtv_results),
+            )
+
+            return dtv_df
+
+        # Fallback: extract pre-computed DTV from counter locations CSV
+        log.info("No counter measurements configured, extracting DTV from counter locations")
+        locations = load_counter_locations(self.config, validate=False)
+
+        if "dtv" not in locations.columns:
+            msg = "Counter locations must have a 'dtv' column when counter_measurements is not configured"
+            raise ValueError(msg)
+
+        dtv_df = pd.DataFrame({
+            "counter_id": locations["name"].astype(str).str.strip(),
+            "dtv": pd.to_numeric(locations["dtv"], errors="coerce"),
+            "quality_score": 1.0,
+            "is_valid": True,
+        })
+        dtv_df = dtv_df.dropna(subset=["dtv"])
+
         log.info(
-            "DTV computation complete",
-            valid_counters=len(valid_results),
-            total_counters=len(dtv_results),
+            "Extracted DTV from counter locations",
+            valid_counters=len(dtv_df),
+            total_counters=len(locations),
         )
 
         return dtv_df
@@ -425,6 +455,13 @@ class ETLPipeline:
             dtv_counter_ids=dtv_df["counter_id"].head(10).tolist(),
             location_names=counters_gdf["name"].head(10).tolist(),
         )
+
+        # Drop columns from counters_gdf that will come from dtv_df to avoid
+        # suffix conflicts (e.g., when counter locations CSV already has a 'dtv' column)
+        dtv_merge_cols = {"dtv", "quality_score", "is_valid", "counter_id"}
+        overlap_cols = [c for c in counters_gdf.columns if c in dtv_merge_cols]
+        if overlap_cols:
+            counters_gdf = counters_gdf.drop(columns=overlap_cols)
 
         # Merge on counter name
         merged = counters_gdf.merge(
@@ -523,7 +560,8 @@ class ETLPipeline:
             GeoDataFrame with previous verifications merged in.
         """
         verified_counters = load_verified_counters(
-            self.config.data_paths.data_root, self.config.year
+            self.config.data_paths.data_root, self.config.year,
+            project=self.config.project,
         )
 
         if verified_counters is None:
@@ -1004,6 +1042,22 @@ class ETLPipeline:
             if "ars_pop" in gdf.columns:
                 gdf = gdf.drop(columns=["ars_pop"])
 
+            # Exclude counters in gemeindefreie Gebiete (population = 0)
+            # These are uninhabited areas (forests, military zones) where
+            # derived features like participation_rate produce infinity values
+            if "population" in gdf.columns:
+                zero_pop_mask = gdf["population"] == 0
+                n_zero_pop = zero_pop_mask.sum()
+                if n_zero_pop > 0:
+                    id_col = "counter_id" if "counter_id" in gdf.columns else "name"
+                    excluded_names = gdf.loc[zero_pop_mask, id_col].tolist()
+                    log.warning(
+                        "Excluding counters in gemeindefreie Gebiete (population=0)",
+                        n_excluded=n_zero_pop,
+                        counters=excluded_names,
+                    )
+                    gdf = gdf[~zero_pop_mask]
+
         # Join RegioStaR - requires municipality-level ARS
         # RegioStaR is defined at municipality level, so we need to spatial join
         # with municipalities to get the correct ARS for matching
@@ -1232,6 +1286,7 @@ class ETLPipeline:
             "participation_rate": "TN_SR_relativ",
             "route_intensity": "Streckengewicht_SR",
             "regiostar5": "RegioStaR5",
+            "regiostar7": "RegioStaR7",
             "stadtradeln_volume": "Erh_SR",
             "count": "Erh_SR",  # fallback if not normalized
             "dist_to_center_m": "HubDist",
@@ -1260,6 +1315,7 @@ class ETLPipeline:
             "TN_SR_relativ",
             "Streckengewicht_SR",
             "RegioStaR5",
+            "RegioStaR7",
             "Erh_SR",
             "HubDist",
             "id",

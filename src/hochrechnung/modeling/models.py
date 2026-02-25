@@ -73,7 +73,7 @@ PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
     "Random Forest": {
         "regressor__model__max_features": ["sqrt", "log2"],
         "regressor__model__criterion": ["squared_error", "poisson"],
-        "regressor__model__min_samples_split": [32, 64],
+        "regressor__model__min_samples_split": [16, 32, 64],
         "regressor__model__n_estimators": [128],
     },
     "Gradient Boosting": {
@@ -85,7 +85,7 @@ PARAM_GRIDS: dict[str, dict[str, list[Any]]] = {
         "regressor__model__min_samples_leaf": [16, 32, 64],
     },
     "SVR": {
-        "regressor__model__C": [1, 2],
+        "regressor__model__C": [1, 2, 4],
         "regressor__model__gamma": ["auto", 0.1],
         "regressor__model__epsilon": [0.1, 0.01],
         "regressor__model__kernel": ["rbf"],
