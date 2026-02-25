@@ -1,0 +1,48 @@
+# Configuration for Hessen
+
+# Project identifier (drives MLflow experiment + output paths)
+project: germany-2025
+
+# 12-digit ARS for Landkreis Darmstadt-Dieburg
+ars: "000000000000"
+region_name: "Deutschland"
+
+# Analysis year
+year: 2025
+
+# Analysis period
+period:
+  start: "2025-05-01"
+  end: "2025-09-30"
+
+# Data paths - only traffic_volumes required for prediction
+data:
+  traffic_volumes: "trafficvolumes/SR25_DE_VM.fgb"
+  osm_pbf: "osm-data/germany-250101.osm.pbf"
+  city_centroids: "structural-data/places.gpkg"
+  counter_locations: "counter-locations/germany_dzs_2025_gesamt.csv"
+  gebietseinheiten: "structural-data/DE_Gebietseinheiten.gpkg"
+  images_db: "counter-locations/germany_dzs.db"
+  kommunen_stats: "kommunen-stats/SR25_Commune_Statistics.json"
+
+# Training data quality filters for germany-2025
+# Analysis of 682 counters (training_data_2025.csv) revealed:
+#   - 18 OSM edges matched to multiple counters (22 duplicate rows)
+#     creating contradictory training signal (same Erh_SR, different DTV)
+#   - 23 rows with DTV/Erh_SR ratio outside IQR fences (<0.27 or >9.81)
+#     indicating counter<->edge mismatches (e.g. Schwedter Steg ratio=54,
+#     Jahnallee stadteinwarts DTV=2 on edge with Erh_SR=2195)
+# Combined cleaning removes ~51 rows (7.5%) and improves simple log-log
+# R² from 0.704 to 0.789 (+0.086). Ratio thresholds derived from
+# IQR method on log10(DTV/Erh_SR): Q1=0.017, Q3=0.407, fence=1.5*IQR.
+training:
+  deduplicate_edges: true
+  min_volume_ratio: 0.27
+  max_volume_ratio: 9.81
+
+# Statistics approach configuration
+# approach: legacy (default) uses kommunen_stats shapefiles + VG250
+# approach: gebietseinheiten uses DE_Gebietseinheiten + aggregated JSON
+stats:
+  approach: gebietseinheiten
+  admin_level: Verwaltungsgemeinschaft

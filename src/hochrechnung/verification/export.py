@@ -96,6 +96,7 @@ def export_verification_data(
     outlier_threshold_upper: float,
     median_ratio: float,
     n_by_severity: dict[str, int] | None = None,
+    images_db_path: Path | None = None,
 ) -> Path:
     """
     Export verification data to JSON.
@@ -120,6 +121,24 @@ def export_verification_data(
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "verification_data.json"
 
+    # Build image count lookup from SQLite database
+    image_counts: dict[str, int] = {}
+    if images_db_path and images_db_path.exists():
+        import sqlite3
+
+        try:
+            conn = sqlite3.connect(images_db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT counter_id, COUNT(*) FROM images GROUP BY counter_id"
+            )
+            for row in cursor.fetchall():
+                image_counts[str(row[0])] = row[1]
+            conn.close()
+            log.info("Loaded image counts", n_counters_with_images=len(image_counts))
+        except Exception as e:
+            log.warning("Failed to load image counts", error=str(e))
+
     # Prepare counter data
     counters_export = []
 
@@ -138,8 +157,12 @@ def export_verification_data(
     )
 
     for _, row in df_sorted.iterrows():
+        # Original numeric ID (Counter_ID_orig) for image DB lookups
+        original_id = str(row["id"]) if "id" in row and _is_valid(row.get("id")) else None
+
         counter_data = {
             "counter_id": str(row["counter_id"]),
+            "original_id": original_id,
             "name": str(row.get("name", "")),
             "latitude": float(row["latitude"]),
             "longitude": float(row["longitude"]),
@@ -180,6 +203,7 @@ def export_verification_data(
                 if "candidate_edges" in row and row["candidate_edges"] is not None
                 else []
             ),
+            "image_count": image_counts.get(original_id, 0) if original_id else 0,
         }
         counters_export.append(counter_data)
 

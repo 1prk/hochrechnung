@@ -144,6 +144,10 @@ def categorize_osm_infrastructure(
         msg = f"Categorizer did not create output file: {output_path}"
         raise OSMCategorizerError(msg)
 
+    if output_path.stat().st_size == 0:
+        msg = f"Categorizer produced empty output file: {output_path}"
+        raise OSMCategorizerError(msg)
+
     log.info("OSM categorization complete", output=str(output_path))
     return output_path
 
@@ -210,8 +214,8 @@ def load_osm_infrastructure(
     # Determine assessed CSV path (derives from PBF filename)
     assessed_csv = _get_assessed_csv_path(config, pbf_path)
 
-    # Check for existing assessed file
-    if use_cached and assessed_csv.exists():
+    # Check for existing assessed file (ignore empty files)
+    if use_cached and assessed_csv.exists() and assessed_csv.stat().st_size > 0:
         log.info("Loading cached OSM categorization", path=str(assessed_csv))
         return pd.read_csv(assessed_csv)
 

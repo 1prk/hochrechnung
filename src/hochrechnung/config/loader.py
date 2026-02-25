@@ -14,6 +14,8 @@ from typing import Any
 import yaml
 
 from hochrechnung.config.settings import (
+    CalibrationConfig,
+    CalibratorType,
     CuratedConfig,
     DataPathsConfig,
     FeatureConfig,
@@ -190,6 +192,9 @@ def load_config(
         gebietseinheiten=Path(data_data["gebietseinheiten"])
         if data_data.get("gebietseinheiten")
         else Path("structural-data/DE_Gebietseinheiten.gpkg"),
+        images_db=Path(data_data["images_db"])
+        if data_data.get("images_db")
+        else None,
     )
 
     # Features config (from base.yaml defaults)
@@ -222,6 +227,9 @@ def load_config(
         min_dtv=training_data.get("min_dtv", 25),
         max_dtv=training_data.get("max_dtv"),
         metrics=training_data.get("metrics", ["r2", "rmse", "mae", "mape"]),
+        deduplicate_edges=training_data.get("deduplicate_edges", False),
+        min_volume_ratio=training_data.get("min_volume_ratio"),
+        max_volume_ratio=training_data.get("max_volume_ratio"),
     )
 
     # Models config (from base.yaml defaults)
@@ -261,6 +269,19 @@ def load_config(
         admin_level=stats_data.get("admin_level", "Verwaltungsgemeinschaft"),
     )
 
+    # Calibration config (optional - for transfer to new regions)
+    calibration_data = merged.get("calibration", {})
+    calibrator_str = calibration_data.get("calibrator", "log_linear")
+    calibration = CalibrationConfig(
+        counter_locations=Path(calibration_data["counter_locations"])
+        if calibration_data.get("counter_locations")
+        else None,
+        calibrator=CalibratorType(calibrator_str),
+        stratify_by=calibration_data.get("stratify_by"),
+        min_stations_per_stratum=calibration_data.get("min_stations_per_stratum", 3),
+        random_state=calibration_data.get("random_state", 1337),
+    )
+
     return PipelineConfig(
         project=project,
         region=region,
@@ -274,4 +295,5 @@ def load_config(
         output=output,
         curated=curated,
         stats=stats,
+        calibration=calibration,
     )

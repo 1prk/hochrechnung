@@ -37,7 +37,7 @@ mlflow:
 
 # Training parameters
 training:
-  test_size: 0.2
+  test_size: 0.0  # CV only, no holdout (paper methodology)
   cv_folds: 10  # Paper methodology (Section 3.5)
   random_state: 1337
   min_dtv: 25
@@ -152,3 +152,12 @@ models:
 curated:
   path: "counts/2024-03-21_DZS_SR_ARS_Datengrundlage_ManuellErgaenzt.csv"
   city_centroids: "structural-data/places.gpkg"
+
+# Calibration settings (for transfer to new regions)
+# Use with: uv run hochrechnung calibrate --config <config> --model <model>
+calibration:
+  counter_locations: null  # Set in project config: "verified/calibration_region_year.csv"
+  calibrator: "log_linear"  # global_multiplicative, log_linear, stratified
+  stratify_by: null  # e.g., ["infra_category"] for stratified calibrator
+  min_stations_per_stratum: 3
+  random_state: 1337

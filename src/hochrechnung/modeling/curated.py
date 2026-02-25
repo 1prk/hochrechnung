@@ -132,17 +132,24 @@ def load_curated_data(
     X = df[feature_cols].copy()
     y: pd.Series[Any] = df["dtv"].copy()  # type: ignore[assignment]
 
-    # Split data
-    split_result = train_test_split(
-        X,
-        y,
-        test_size=config.training.test_size,
-        random_state=config.training.random_state,
-    )
-    X_train = cast("pd.DataFrame", split_result[0])
-    X_test = cast("pd.DataFrame", split_result[1])
-    y_train = cast("pd.Series", split_result[2])
-    y_test = cast("pd.Series", split_result[3])
+    # Split data (or use all data for CV-only mode)
+    if config.training.test_size > 0:
+        split_result = train_test_split(
+            X,
+            y,
+            test_size=config.training.test_size,
+            random_state=config.training.random_state,
+        )
+        X_train = cast("pd.DataFrame", split_result[0])
+        X_test = cast("pd.DataFrame", split_result[1])
+        y_train = cast("pd.Series", split_result[2])
+        y_test = cast("pd.Series", split_result[3])
+    else:
+        # CV-only: all data used for training, no holdout
+        X_train = X
+        X_test = cast("pd.DataFrame", X.iloc[:0])
+        y_train = y
+        y_test = cast("pd.Series", y.iloc[:0])
 
     # Compute target statistics
     target_stats = _compute_target_stats(y)

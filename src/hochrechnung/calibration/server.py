@@ -1,7 +1,7 @@
 """
-Simple HTTP server for verification UI.
+HTTP server for calibration station verification UI.
 
-Serves the static frontend and handles API requests for saving corrections.
+Similar to verification/server.py but adapted for calibration stations.
 """
 
 import json
@@ -10,23 +10,24 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
+from hochrechnung.calibration.loader import save_verified_calibration_counters
 from hochrechnung.utils.logging import get_logger
-from hochrechnung.verification.persistence import save_verified_counters
 
 log = get_logger(__name__)
 
 
-class VerificationHandler(BaseHTTPRequestHandler):
-    """HTTP request handler for verification UI."""
+class CalibrationVerificationHandler(BaseHTTPRequestHandler):
+    """HTTP request handler for calibration verification UI."""
 
     # Class variables set by server
     verification_data_path: Path | None = None
     mbtiles_path: Path | None = None
     data_root: Path | None = None
     year: int | None = None
-    counters_df: Any = None  # pandas DataFrame
-    images_db_path: Path | None = None
-    project: str | None = None
+    region: str | None = None
+    stations_df: Any = None  # pandas DataFrame
+    dtv_column: str = "dtv"
+    id_column: str = "id"
 
     def do_GET(self) -> None:
         """Handle GET requests."""
@@ -38,9 +39,6 @@ class VerificationHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/api/verification-data":
             self._serve_verification_data()
-
-        elif self.path.startswith("/api/images/"):
-            self._serve_images()
 
         elif self.path.startswith("/tiles/"):
             self._serve_tile()
@@ -64,8 +62,9 @@ class VerificationHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
 
     def _serve_file(self, filename: str, content_type: str) -> None:
-        """Serve a static file."""
-        static_dir = Path(__file__).parent / "static"
+        """Serve a static file from verification module's static dir."""
+        # Use the same static files from verification module
+        static_dir = Path(__file__).parent.parent / "verification" / "static"
         file_path = static_dir / filename
 
         if not file_path.exists():
@@ -94,84 +93,11 @@ class VerificationHandler(BaseHTTPRequestHandler):
             data = json.load(f)
             self.wfile.write(json.dumps(data).encode())
 
-    def _serve_images(self) -> None:
-        """Serve counter images from SQLite database."""
-        import sqlite3
-
-        if not self.images_db_path or not self.images_db_path.exists():
-            self.send_error(404, "Images database not configured")
-            return
-
-        # Parse path: /api/images/{counter_id} or /api/images/{counter_id}/{image_id}
-        parts = self.path.split("/")
-        # parts = ['', 'api', 'images', counter_id, ...]
-        if len(parts) < 4:
-            self.send_error(400, "Invalid image path")
-            return
-
-        counter_id = parts[3]
-
-        try:
-            conn = sqlite3.connect(self.images_db_path)
-            cursor = conn.cursor()
-
-            if len(parts) == 4:
-                # GET /api/images/{counter_id} → JSON list of images
-                cursor.execute(
-                    "SELECT id, filename, content_type FROM images WHERE counter_id = ?",
-                    (int(counter_id),),
-                )
-                rows = cursor.fetchall()
-                conn.close()
-
-                images = [
-                    {"id": row[0], "filename": row[1], "content_type": row[2]}
-                    for row in rows
-                ]
-
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(json.dumps(images).encode())
-
-            elif len(parts) == 5:
-                # GET /api/images/{counter_id}/{image_id} → raw image BLOB
-                image_id = parts[4]
-                cursor.execute(
-                    "SELECT image_data, content_type, filename FROM images WHERE id = ? AND counter_id = ?",
-                    (int(image_id), int(counter_id)),
-                )
-                row = cursor.fetchone()
-                conn.close()
-
-                if row is None:
-                    self.send_error(404, "Image not found")
-                    return
-
-                image_data, content_type, filename = row
-
-                self.send_response(200)
-                self.send_header("Content-Type", content_type or "image/jpeg")
-                self.send_header("Cache-Control", "public, max-age=86400")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(image_data)
-
-            else:
-                conn.close()
-                self.send_error(400, "Invalid image path")
-
-        except Exception as e:
-            log.error("Failed to serve image", error=str(e))
-            self.send_error(500, f"Image serving failed: {e}")
-
     def _safe_send_error(self, code: int, message: str) -> None:
         """Send error response, ignoring connection errors."""
         try:
             self.send_error(code, message)
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
-            # Client already disconnected, ignore
             pass
 
     def _serve_tile(self) -> None:
@@ -182,7 +108,6 @@ class VerificationHandler(BaseHTTPRequestHandler):
             self._safe_send_error(500, "MBTiles not found")
             return
 
-        # Parse tile coordinates from path: /tiles/{z}/{x}/{y}.pbf
         parts = self.path.split("/")
         if len(parts) != 5:
             self._safe_send_error(400, "Invalid tile path")
@@ -197,8 +122,6 @@ class VerificationHandler(BaseHTTPRequestHandler):
             self._safe_send_error(400, "Invalid tile coordinates")
             return
 
-        # Query MBTiles database
-        # MBTiles uses TMS scheme (flip Y coordinate)
         tms_y = (2**z - 1) - y
 
         try:
@@ -228,19 +151,22 @@ class VerificationHandler(BaseHTTPRequestHandler):
             self.wfile.write(tile_data)
 
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
-            # Client cancelled request (common during fast map panning)
             pass
         except Exception as e:
             log.error("Failed to serve tile", error=str(e))
             self._safe_send_error(500, "Tile serving failed")
 
     def _save_corrections(self) -> None:
-        """Save counter corrections."""
-        if self.data_root is None or self.year is None or self.counters_df is None:
+        """Save calibration station corrections."""
+        if (
+            self.data_root is None
+            or self.year is None
+            or self.region is None
+            or self.stations_df is None
+        ):
             self.send_error(500, "Server not properly configured")
             return
 
-        # Read request body
         content_length = int(self.headers["Content-Length"])
         body = self.rfile.read(content_length)
 
@@ -252,41 +178,40 @@ class VerificationHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "No changes provided")
                 return
 
-            # Update counters DataFrame
-
+            # Update stations DataFrame
             for change in changes:
-                counter_id = change["counter_id"]
-                mask = self.counters_df["counter_id"] == counter_id
+                counter_id = str(change["counter_id"])
+                mask = self.stations_df[self.id_column].astype(str) == counter_id
 
                 if mask.any():
-                    self.counters_df.loc[mask, "base_id"] = change["base_id"]
-
-                    if change.get("count") is not None:
-                        self.counters_df.loc[mask, "count"] = change["count"]
-
-                    self.counters_df.loc[mask, "verification_status"] = "verified"
-                    self.counters_df.loc[mask, "verified_at"] = datetime.now()
-                    self.counters_df.loc[mask, "verification_metadata"] = change.get(
+                    # Update verification status
+                    self.stations_df.loc[mask, "verification_status"] = "verified"
+                    self.stations_df.loc[mask, "verified_at"] = datetime.now().isoformat()
+                    self.stations_df.loc[mask, "verification_metadata"] = change.get(
                         "metadata", ""
                     )
-                    # Handle discard flag (defaults to False if not provided)
-                    self.counters_df.loc[mask, "is_discarded"] = change.get(
+                    self.stations_df.loc[mask, "is_discarded"] = change.get(
                         "is_discarded", False
                     )
 
-            # Save to CSV
-            saved_path = save_verified_counters(
-                self.counters_df, self.data_root, self.year,
-                project=self.project,
+                    # Update DTV if provided (for corrections)
+                    if change.get("dtv") is not None:
+                        self.stations_df.loc[mask, self.dtv_column] = change["dtv"]
+
+            # Save to verified CSV
+            saved_path = save_verified_calibration_counters(
+                self.stations_df,
+                self.data_root,
+                self.region,
+                self.year,
             )
 
             log.info(
-                "Saved corrections",
+                "Saved calibration corrections",
                 n_changes=len(changes),
                 path=str(saved_path),
             )
 
-            # Send success response
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -301,58 +226,61 @@ class VerificationHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: Any) -> None:
         """Override to use our logger."""
-        # format and args are unused - we use our own logger
         _ = format, args
         log.debug("HTTP request", method=self.command, path=self.path)
 
 
-def start_verification_server(
+def start_calibration_verification_server(
     verification_data_path: Path,
-    mbtiles_path: Path,
+    mbtiles_path: Path | None,
     data_root: Path,
     year: int,
-    counters_df: Any,
+    region: str,
+    stations_df: Any,
+    dtv_column: str = "dtv",
+    id_column: str = "id",
     port: int = 8000,
-    images_db_path: Path | None = None,
-    project: str | None = None,
 ) -> None:
     """
-    Start verification HTTP server.
+    Start calibration verification HTTP server.
 
     Args:
         verification_data_path: Path to verification JSON.
-        mbtiles_path: Path to MBTiles file.
+        mbtiles_path: Path to MBTiles file (optional).
         data_root: Root data directory.
         year: Campaign year.
-        counters_df: DataFrame with counter data.
+        region: Region name.
+        stations_df: DataFrame with calibration station data.
+        dtv_column: Name of DTV column.
+        id_column: Name of ID column.
         port: HTTP port.
-        images_db_path: Path to SQLite database with counter location images.
-        project: Project identifier for namespacing verified counter files.
     """
-    # Set class variables for handler
-    VerificationHandler.verification_data_path = verification_data_path
-    VerificationHandler.mbtiles_path = mbtiles_path
-    VerificationHandler.data_root = data_root
-    VerificationHandler.year = year
-    VerificationHandler.counters_df = counters_df
-    VerificationHandler.images_db_path = images_db_path
-    VerificationHandler.project = project
+    CalibrationVerificationHandler.verification_data_path = verification_data_path
+    CalibrationVerificationHandler.mbtiles_path = mbtiles_path
+    CalibrationVerificationHandler.data_root = data_root
+    CalibrationVerificationHandler.year = year
+    CalibrationVerificationHandler.region = region
+    CalibrationVerificationHandler.stations_df = stations_df
+    CalibrationVerificationHandler.dtv_column = dtv_column
+    CalibrationVerificationHandler.id_column = id_column
 
-    server = HTTPServer(("localhost", port), VerificationHandler)
+    server = HTTPServer(("localhost", port), CalibrationVerificationHandler)
 
     log.info(
-        "Starting verification server",
+        "Starting calibration verification server",
         url=f"http://localhost:{port}",
         year=year,
+        region=region,
     )
 
-    print(f"\n🌐 Verification UI: http://localhost:{port}")
+    print(f"\n🎯 Calibration Verification UI: http://localhost:{port}")
     print(f"📊 Year: {year}")
+    print(f"🗺️  Region: {region}")
     print(f"📁 Data: {verification_data_path}")
-    print("\nPress Ctrl+C to stop\n")
+    print("\nVerify calibration stations, then press Ctrl+C to continue with calibration\n")
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        log.info("Shutting down verification server")
+        log.info("Shutting down calibration verification server")
         server.shutdown()

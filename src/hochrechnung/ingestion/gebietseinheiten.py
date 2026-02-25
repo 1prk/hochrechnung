@@ -124,16 +124,34 @@ class GebietseinheitenLoader(GeoDataLoader[GebietseinheitenSchema]):
                     examples=kreisfreie_gdf["name"].head(5).tolist() if len(kreisfreie_gdf) > 0 else [],
                 )
 
-                # Combine VGs and Kreisfreie Städte
+                # Find Stadtstaaten: Länder that have no Kreis with matching prefix
+                # (Berlin, Hamburg, Bremen exist only at Land level)
+                land_gdf = gdf[gdf["admin_level"] == "Land"].copy()
+                kreis_prefixes = set(kreis_gdf["ars"].str[:2].unique())
+                stadtstaaten_mask = ~land_gdf["ars"].str[:2].isin(kreis_prefixes)
+                stadtstaaten_gdf = land_gdf[stadtstaaten_mask]
+
+                if len(stadtstaaten_gdf) > 0:
+                    log.info(
+                        "Identified Stadtstaaten",
+                        n_stadtstaaten=len(stadtstaaten_gdf),
+                        names=stadtstaaten_gdf["name"].tolist(),
+                    )
+
+                # Combine VGs, Kreisfreie Städte, and Stadtstaaten
                 gdf = gpd.GeoDataFrame(
-                    pd.concat([vg_gdf, kreisfreie_gdf], ignore_index=True),
+                    pd.concat(
+                        [vg_gdf, kreisfreie_gdf, stadtstaaten_gdf],
+                        ignore_index=True,
+                    ),
                     crs=gdf.crs,
                 )
                 log.info(
-                    "Filtered by admin level (VG + Kreisfreie Städte)",
+                    "Filtered by admin level (VG + Kreisfreie Städte + Stadtstaaten)",
                     admin_level=self.admin_level.value,
                     n_vg=len(vg_gdf),
                     n_kreisfreie=len(kreisfreie_gdf),
+                    n_stadtstaaten=len(stadtstaaten_gdf),
                     total_rows=len(gdf),
                 )
             else:

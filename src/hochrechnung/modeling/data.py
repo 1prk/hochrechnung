@@ -41,7 +41,7 @@ ENHANCED_FEATURES_ETL = [
     "Streckengewicht_SR",  # route_intensity - StandardScaler
     "TN_SR_relativ",  # participation_rate - RobustScaler
     "OSM_Radinfra",  # infra_category - OrdinalEncoder
-    "RegioStaR5",  # regiostar5
+    "RegioStaR7",  # regiostar7 (paper uses 7-class typology)
     "HubDist",  # dist_to_center_m
 ]
 
@@ -51,7 +51,7 @@ ENHANCED_FEATURES = [
     "route_intensity",
     "participation_rate",
     "infra_category",
-    "regiostar5",
+    "regiostar7",
     "dist_to_center_m",
 ]
 
@@ -61,6 +61,7 @@ ETL_TO_MODEL_COLUMNS: dict[str, str] = {
     "TN_SR_relativ": "participation_rate",
     "Streckengewicht_SR": "route_intensity",
     "RegioStaR5": "regiostar5",
+    "RegioStaR7": "regiostar7",
     "Erh_SR": "stadtradeln_volume",
     "HubDist": "dist_to_center_m",
     "DZS_mean_SR": "dtv",
@@ -135,6 +136,10 @@ def load_training_data(
     # Filter by DTV bounds
     df = _filter_by_dtv(df, target_col, config)
 
+    # Data quality filters
+    df = _deduplicate_edges(df, target_col, config)
+    df = _filter_by_volume_ratio(df, target_col, config)
+
     # Get feature columns based on variant
     feature_cols = _get_feature_columns(df, target_col, config, variant=variant)
 
@@ -156,13 +161,20 @@ def load_training_data(
     X = df[feature_cols].copy()
     y = df[target_col].copy()
 
-    # Split data
-    X_train, X_test, y_train, y_test = train_test_split(
-        X,
-        y,
-        test_size=config.training.test_size,
-        random_state=config.training.random_state,
-    )
+    # Split data (or use all data for CV-only mode)
+    if config.training.test_size > 0:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=config.training.test_size,
+            random_state=config.training.random_state,
+        )
+    else:
+        # CV-only: all data used for training, no holdout
+        X_train = X
+        y_train = y
+        X_test = X.iloc[:0]  # empty DataFrame with same columns
+        y_test = y.iloc[:0]  # empty Series
 
     # Compute target statistics
     target_stats = _compute_target_stats(y)
@@ -241,6 +253,97 @@ def _filter_by_dtv(
             filtered=filtered_len,
             min_dtv=config.training.min_dtv,
             max_dtv=config.training.max_dtv,
+        )
+
+    return df
+
+
+def _deduplicate_edges(
+    df: pd.DataFrame,
+    target_col: str,
+    config: PipelineConfig,
+) -> pd.DataFrame:
+    """Deduplicate rows sharing the same OSM edge, keeping the row with highest DTV."""
+    if not config.training.deduplicate_edges:
+        return df
+
+    edge_col = "base_id"
+    if edge_col not in df.columns:
+        log.warning("No base_id column found, skipping edge deduplication")
+        return df
+
+    original_len = len(df)
+
+    # Exclude unmatched edges (base_id == -1)
+    unmatched = df[df[edge_col] == -1]
+    matched = df[df[edge_col] != -1]
+
+    # For each OSM edge, keep the row with highest DTV
+    deduped = matched.sort_values(target_col, ascending=False).drop_duplicates(
+        subset=[edge_col], keep="first"
+    )
+
+    df = pd.concat([deduped, unmatched], ignore_index=True)
+    removed = original_len - len(df)
+
+    if removed > 0:
+        log.info(
+            "Deduplicated by OSM edge",
+            original=original_len,
+            removed=removed,
+            remaining=len(df),
+        )
+
+    return df
+
+
+def _filter_by_volume_ratio(
+    df: pd.DataFrame,
+    target_col: str,
+    config: PipelineConfig,
+) -> pd.DataFrame:
+    """Filter rows with extreme DTV/stadtradeln_volume ratios."""
+    min_ratio = config.training.min_volume_ratio
+    max_ratio = config.training.max_volume_ratio
+
+    if min_ratio is None and max_ratio is None:
+        return df
+
+    # Find the volume column (renamed or ETL name)
+    volume_col = None
+    for candidate in ["stadtradeln_volume", "Erh_SR"]:
+        if candidate in df.columns:
+            volume_col = candidate
+            break
+
+    if volume_col is None:
+        log.warning("No volume column found, skipping ratio filter")
+        return df
+
+    original_len = len(df)
+
+    # Compute ratio, avoiding division by zero
+    ratio = df[target_col] / df[volume_col].replace(0, np.nan)
+
+    mask = pd.Series(True, index=df.index)
+    if min_ratio is not None:
+        mask &= ratio >= min_ratio
+    if max_ratio is not None:
+        mask &= ratio <= max_ratio
+    # Keep rows where ratio couldn't be computed (NaN volume)
+    mask |= ratio.isna()
+
+    df = df[mask].copy()
+    removed = original_len - len(df)
+
+    if removed > 0:
+        log.info(
+            "Filtered by volume ratio",
+            original=original_len,
+            removed=removed,
+            remaining=len(df),
+            min_ratio=min_ratio,
+            max_ratio=max_ratio,
         )
 
     return df

@@ -11,3 +11,7 @@ period:
 
 data:
   traffic_volumes: "/mnt/c/Users/Porojkow/Documents/Projekte/VV01_Hessen/hochrechnung/data/trafficvolumes/SR23_Leipzig_VM.gpkg"
+
+calibration:
+  counter_locations: "counts/calibration/DZS_leipzig_2023.csv"  # Set in project config: "verified/calibration_region_year.csv"
+  calibrator: "log_linear"  # global_multiplicative, log_linear, stratified

@@ -59,7 +59,7 @@ class VerifiedCounter:
 
 
 def load_verified_counters(
-    data_root: Path, year: int, *, must_exist: bool = False
+    data_root: Path, year: int, *, project: str | None = None, must_exist: bool = False
 ) -> pd.DataFrame | None:
     """
     Load verified counter dataset for a specific year.
@@ -67,6 +67,7 @@ def load_verified_counters(
     Args:
         data_root: Root data directory.
         year: Campaign year.
+        project: Project identifier for namespacing (e.g., 'germany-2025').
         must_exist: If True, raises FileNotFoundError if file doesn't exist.
 
     Returns:
@@ -77,18 +78,31 @@ def load_verified_counters(
         FileNotFoundError: If file doesn't exist and must_exist=True.
     """
     verified_dir = data_root / "verified"
+    if project:
+        verified_dir = verified_dir / project
     verified_path = verified_dir / f"counters_verified_{year}.csv"
 
     if not verified_path.exists():
-        if must_exist:
-            msg = f"Verified counter dataset not found: {verified_path}"
-            raise FileNotFoundError(msg)
-        log.info(
-            "No verified counter dataset found",
-            path=str(verified_path),
-            year=year,
-        )
-        return None
+        # Fallback: check legacy flat path (before project namespacing)
+        legacy_path = data_root / "verified" / f"counters_verified_{year}.csv"
+        if project and legacy_path.exists():
+            log.info(
+                "Found verified counters at legacy path, migrating",
+                legacy=str(legacy_path),
+                new=str(verified_path),
+            )
+            verified_dir.mkdir(parents=True, exist_ok=True)
+            legacy_path.rename(verified_path)
+        else:
+            if must_exist:
+                msg = f"Verified counter dataset not found: {verified_path}"
+                raise FileNotFoundError(msg)
+            log.info(
+                "No verified counter dataset found",
+                path=str(verified_path),
+                year=year,
+            )
+            return None
 
     log.info(
         "Loading verified counter dataset",
@@ -130,6 +144,7 @@ def save_verified_counters(
     data_root: Path,
     year: int,
     *,
+    project: str | None = None,
     add_etl_version: bool = True,
 ) -> Path:
     """
@@ -139,12 +154,15 @@ def save_verified_counters(
         verified_df: DataFrame with verified counter data.
         data_root: Root data directory.
         year: Campaign year.
+        project: Project identifier for namespacing (e.g., 'germany-2025').
         add_etl_version: If True, adds git commit hash as etl_version.
 
     Returns:
         Path to saved file.
     """
     verified_dir = data_root / "verified"
+    if project:
+        verified_dir = verified_dir / project
     verified_dir.mkdir(parents=True, exist_ok=True)
 
     verified_path = verified_dir / f"counters_verified_{year}.csv"
@@ -229,6 +247,8 @@ def init_verified_counters_from_previous_year(
     current_year: int,
     previous_year: int,
     new_traffic_volumes: pd.DataFrame,
+    *,
+    project: str | None = None,
 ) -> pd.DataFrame:
     """
     Bootstrap verified counters for a new year from previous year.
@@ -255,7 +275,7 @@ def init_verified_counters_from_previous_year(
     )
 
     # Load previous year
-    prev_verified = load_verified_counters(data_root, previous_year, must_exist=True)
+    prev_verified = load_verified_counters(data_root, previous_year, project=project, must_exist=True)
 
     if prev_verified is None:
         msg = f"Cannot initialize: no verified counters for {previous_year}"
